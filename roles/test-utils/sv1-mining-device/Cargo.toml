@@ -1,8 +1,11 @@
 [package]
 name = "sv1-mining-device"
+description = "todo"
+authors = ["The Stratum v2 Developers"]
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "MIT + Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
