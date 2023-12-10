@@ -1,80 +1,18 @@
 #![allow(special_module_name)]
 use async_channel::{bounded, unbounded};
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use tokio::select;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 //use error::OutputScriptError;
 use roles_logic_sv2::{
     errors::Error, parsers::PoolMessages, utils::CoinbaseOutput as CoinbaseOutput_,
 };
-use serde::Deserialize;
-use std::convert::{TryFrom, TryInto};
-use stratum_common::bitcoin::{Script, TxOut};
 
 use tracing::{error, info, warn};
-mod error;
+// use pool_sv2::template_receiver;
+
 mod lib;
-mod status;
 
-use lib::{mining_pool::Pool, template_receiver::TemplateRx};
-
-pub type Message = PoolMessages<'static>;
-pub type StdFrame = StandardSv2Frame<Message>;
-pub type EitherFrame = StandardEitherFrame<Message>;
-
-pub fn get_coinbase_output(config: &Configuration) -> Result<Vec<TxOut>, Error> {
-    let mut result = Vec::new();
-    for coinbase_output_pool in &config.coinbase_outputs {
-        let coinbase_output: CoinbaseOutput_ = coinbase_output_pool.try_into()?;
-        let output_script: Script = coinbase_output.try_into()?;
-        result.push(TxOut {
-            value: 0,
-            script_pubkey: output_script,
-        });
-    }
-    match result.is_empty() {
-        true => Err(Error::EmptyCoinbaseOutputs),
-        _ => Ok(result),
-    }
-}
-
-impl TryFrom<&CoinbaseOutput> for CoinbaseOutput_ {
-    type Error = Error;
-
-    fn try_from(pool_output: &CoinbaseOutput) -> Result<Self, Self::Error> {
-        match pool_output.output_script_type.as_str() {
-            "TEST" | "P2PK" | "P2PKH" | "P2WPKH" | "P2SH" | "P2WSH" | "P2TR" => {
-                Ok(CoinbaseOutput_ {
-                    output_script_type: pool_output.clone().output_script_type,
-                    output_script_value: pool_output.clone().output_script_value,
-                })
-            }
-            _ => Err(Error::UnknownOutputScriptType),
-        }
-    }
-}
-
-use tokio::select;
-
-use crate::status::Status;
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CoinbaseOutput {
-    output_script_type: String,
-    output_script_value: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Configuration {
-    pub listen_address: String,
-    pub tp_address: String,
-    pub authority_public_key: Secp256k1PublicKey,
-    pub authority_secret_key: Secp256k1SecretKey,
-    pub cert_validity_sec: u64,
-    pub coinbase_outputs: Vec<CoinbaseOutput>,
-    pub pool_signature: String,
-    #[cfg(feature = "test_only_allow_unencrypted")]
-    pub test_only_listen_adress_plain: String,
-}
+// use lib::{mining_pool::Pool, template_receiver::TemplateRx};
 
 mod args {
     use std::path::PathBuf;
@@ -148,7 +86,7 @@ async fn main() {
     };
 
     // Load config
-    let config: Configuration = match std::fs::read_to_string(&args.config_path) {
+    let config: pool_sv2::Configuration = match std::fs::read_to_string(&args.config_path) {
         Ok(c) => match toml::from_str(&c) {
             Ok(c) => c,
             Err(e) => {
@@ -168,7 +106,7 @@ async fn main() {
     let (s_solution, r_solution) = bounded(10);
     let (s_message_recv_signal, r_message_recv_signal) = bounded(10);
     info!("Pool INITIALIZING with config: {:?}", &args.config_path);
-    let coinbase_output_result = get_coinbase_output(&config);
+    let coinbase_output_result = pool_sv2::get_coinbase_output(&config);
     let coinbase_output_len = match coinbase_output_result {
         Ok(coinbase_output) => coinbase_output.len() as u32,
         Err(err) => {
@@ -177,7 +115,7 @@ async fn main() {
         }
     };
     let authority_public_key = config.authority_public_key.clone();
-    let template_rx_res = TemplateRx::connect(
+    let template_rx_res = lib::template_receiver::TemplateRx::connect(
         config.tp_address.parse().unwrap(),
         s_new_t,
         s_prev_hash,
@@ -221,7 +159,7 @@ async fn main() {
                 break;
             }
         };
-        let task_status: Status = task_status.unwrap();
+        let task_status: crate::status::Status = task_status.unwrap();
 
         match task_status.state {
             // Should only be sent by the downstream listener

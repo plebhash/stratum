@@ -1,6 +1,6 @@
 use crate::{
     error::{PoolError, PoolResult},
-    status, Configuration, EitherFrame, StdFrame,
+    Configuration, EitherFrame, StdFrame
 };
 use async_channel::{Receiver, Sender};
 use binary_sv2::U256;
@@ -47,7 +47,7 @@ pub struct Pool {
     new_template_processed: bool,
     channel_factory: Arc<Mutex<PoolChannelFactory>>,
     last_prev_hash_template_id: u64,
-    status_tx: status::Sender,
+    status_tx: crate::status::Sender,
 }
 
 impl Downstream {
@@ -58,7 +58,7 @@ impl Downstream {
         solution_sender: Sender<SubmitSolution<'static>>,
         pool: Arc<Mutex<Pool>>,
         channel_factory: Arc<Mutex<PoolChannelFactory>>,
-        status_tx: status::Sender,
+        status_tx: super::status::Sender,
         address: SocketAddr,
     ) -> PoolResult<Arc<Mutex<Self>>> {
         let setup_connection = Arc::new(Mutex::new(SetupConnectionHandler::new()));
@@ -91,8 +91,8 @@ impl Downstream {
                 Ok(recv) => recv,
                 Err(e) => {
                     if let Err(e) = status_tx
-                        .send(status::Status {
-                            state: status::State::Healthy(format!(
+                        .send(super::status::Status {
+                            state: super::status::State::Healthy(format!(
                                 "Downstream connection dropped: {}",
                                 e
                             )),
@@ -284,7 +284,7 @@ impl Pool {
             let address = stream.peer_addr().unwrap();
             debug!(
                 "New connection from {:?}",
-                stream.peer_addr().map_err(PoolError::Io)
+                stream.peer_addr().map_err(super::error::PoolError::Io)
             );
 
             let responder = Responder::from_authority_kp(
@@ -453,7 +453,7 @@ impl Pool {
         new_prev_hash_rx: Receiver<SetNewPrevHash<'static>>,
         solution_sender: Sender<SubmitSolution<'static>>,
         sender_message_received_signal: Sender<()>,
-        status_tx: status::Sender,
+        status_tx: super::status::Sender,
     ) -> Arc<Mutex<Self>> {
         let extranonce_len = 32;
         let range_0 = std::ops::Range { start: 0, end: 0 };
@@ -523,8 +523,8 @@ impl Pool {
                 error!("{}", e);
             }
             if status_tx_clone
-                .send(status::Status {
-                    state: status::State::DownstreamShutdown(PoolError::ComponentShutdown(
+                .send(super::status::Status {
+                    state: super::status::State::DownstreamShutdown(PoolError::ComponentShutdown(
                         "Downstream no longer accepting incoming connections".to_string(),
                     )),
                 })
@@ -543,8 +543,8 @@ impl Pool {
             }
             // on_new_prev_hash shutdown
             if status_tx_clone
-                .send(status::Status {
-                    state: status::State::DownstreamShutdown(PoolError::ComponentShutdown(
+                .send(super::status::Status {
+                    state: super::status::State::DownstreamShutdown(PoolError::ComponentShutdown(
                         "Downstream no longer accepting new prevhash".to_string(),
                     )),
                 })
@@ -564,8 +564,8 @@ impl Pool {
             }
             // on_new_template shutdown
             if status_tx_clone
-                .send(status::Status {
-                    state: status::State::DownstreamShutdown(PoolError::ComponentShutdown(
+                .send(super::status::Status {
+                    state: super::status::State::DownstreamShutdown(PoolError::ComponentShutdown(
                         "Downstream no longer accepting templates".to_string(),
                     )),
                 })

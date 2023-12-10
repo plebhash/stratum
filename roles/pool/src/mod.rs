@@ -1,12 +1,13 @@
-// pub mod mining_pool;
-// pub mod template_receiver;
-pub mod error;
+pub mod mining_pool;
+pub mod template_receiver;
 pub mod status;
+pub mod error;
 
+use tokio::select;
 use serde::Deserialize;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
-use std::convert::{TryFrom, TryInto};
 
+use crate::status::Status;
 use stratum_common::bitcoin::{Script, TxOut};
 use roles_logic_sv2::{
     errors::Error, parsers::PoolMessages, utils::CoinbaseOutput as CoinbaseOutput_,
