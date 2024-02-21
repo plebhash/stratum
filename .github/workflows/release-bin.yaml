@@ -21,8 +21,12 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Compile Native
+      - name: Compile Native (x86-64 Linux + MacOS)
         run: cargo build --release --locked --manifest-path=roles/pool/Cargo.toml
+
+      - name: Compile MacOS ARM64
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --locked --manifest-path=roles/pool/Cargo.toml --target=aarch64-apple-darwin
 
       - name: Upload Linux x86-64 binaries to release
         if: matrix.os == 'ubuntu-latest'
@@ -40,6 +44,15 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: roles/target/release/pool_sv2
           asset_name: pool_sv2-x86_64-apple-darwin
+          tag: ${{ github.ref }}
+
+      - name: Upload MacOS ARM64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/aarch64-apple-darwin/target/release/pool_sv2
+          asset_name: pool_sv2-aarch64-apple-darwin
           tag: ${{ github.ref }}
 
 #      - name: Install cargo-cross
