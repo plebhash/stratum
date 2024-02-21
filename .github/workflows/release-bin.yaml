@@ -13,7 +13,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -39,15 +39,6 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: roles/target/release/pool_sv2
           asset_name: pool_sv2-x86_64-apple-darwin
-          tag: ${{ github.ref }}
-
-      - name: Upload Windows x86-64 binaries to release
-        if: matrix.os == 'windows-latest'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: roles/target/release/pool_sv2
-          asset_name: pool_sv2-x86_64-windows
           tag: ${{ github.ref }}
 
   release_jdc:
