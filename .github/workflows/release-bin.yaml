@@ -21,7 +21,7 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Compile Native (x86-64 Linux + MacOS)
+      - name: Compile Native
         run: cargo build --release --locked --manifest-path=roles/pool/Cargo.toml
 
       - name: Compile MacOS ARM64
