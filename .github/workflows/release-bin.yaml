@@ -55,7 +55,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: roles/aarch64-apple-darwin/target/release/pool_sv2
+          file: roles/target/aarch64-apple-darwin/release/pool_sv2
           asset_name: pool_sv2-aarch64-apple-darwin
           tag: ${{ github.ref }}
 
