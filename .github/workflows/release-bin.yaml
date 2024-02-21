@@ -59,13 +59,13 @@ jobs:
           asset_name: pool_sv2-aarch64-apple-darwin
           tag: ${{ github.ref }}
 
-      - name: Install cargo-cross
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
       - name: Cross Compile ARM64
+        uses: houseabsolute/actions-rust-cross@v0
         if: matrix.os == 'ubuntu-latest'
-        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target aarch64-unknown-linux-gnu
+        with:
+          command: build
+          target: aarch64-unknown-linux-gnu
+          args: "--release --locked --manifest-path=roles/pool/Cargo.toml"
 
       - name: Upload ARM64
         if: matrix.os == 'ubuntu-latest'
@@ -78,7 +78,11 @@ jobs:
 
       - name: Cross Compile ARM32
         if: matrix.os == 'ubuntu-latest'
-        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target arm-unknown-linux-gnueabi
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          command: build
+          target: arm-unknown-linux-gnueabi
+          args: "--release --locked --manifest-path=roles/pool/Cargo.toml"
 
       - name: Upload ARM32
         if: matrix.os == 'ubuntu-latest'
