@@ -42,35 +42,35 @@ jobs:
           asset_name: pool_sv2-x86_64-apple-darwin
           tag: ${{ github.ref }}
 
-      - name: Install cargo-cross
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo install cross
-
-      - name: Cross Compile ARM64
-        if: matrix.os == 'ubuntu-latest'
-        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target aarch64-unknown-linux-gnu
-
-      - name: Upload ARM64
-        if: matrix.os == 'ubuntu-latest'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: roles/target/aarch64-unknown-linux-gnu/release/pool_sv2
-          asset_name: pool_sv2-aarch64-unknown-linux-gnu
-          tag: ${{ github.ref }}
-
-      - name: Cross Compile ARM32
-        if: matrix.os == 'ubuntu-latest'
-        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target arm-unknown-linux-gnueabi
-
-      - name: Upload ARM32
-        if: matrix.os == 'ubuntu-latest'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: roles/target/arm-unknown-linux-gnueabi/release/pool_sv2
-          asset_name: pool_sv2-arm-unknown-linux-gnueabi
-          tag: ${{ github.ref }}
+#      - name: Install cargo-cross
+#        if: matrix.os == 'ubuntu-latest'
+#        run: cargo install cross
+#
+#      - name: Cross Compile ARM64
+#        if: matrix.os == 'ubuntu-latest'
+#        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target aarch64-unknown-linux-gnu
+#
+#      - name: Upload ARM64
+#        if: matrix.os == 'ubuntu-latest'
+#        uses: svenstaro/upload-release-action@v2
+#        with:
+#          repo_token: ${{ secrets.GITHUB_TOKEN }}
+#          file: roles/target/aarch64-unknown-linux-gnu/release/pool_sv2
+#          asset_name: pool_sv2-aarch64-unknown-linux-gnu
+#          tag: ${{ github.ref }}
+#
+#      - name: Cross Compile ARM32
+#        if: matrix.os == 'ubuntu-latest'
+#        run: cross build --release --locked --manifest-path=roles/pool/Cargo.toml --target arm-unknown-linux-gnueabi
+#
+#      - name: Upload ARM32
+#        if: matrix.os == 'ubuntu-latest'
+#        uses: svenstaro/upload-release-action@v2
+#        with:
+#          repo_token: ${{ secrets.GITHUB_TOKEN }}
+#          file: roles/target/arm-unknown-linux-gnueabi/release/pool_sv2
+#          asset_name: pool_sv2-arm-unknown-linux-gnueabi
+#          tag: ${{ github.ref }}
 
   release_jdc:
     runs-on: ubuntu-latest
