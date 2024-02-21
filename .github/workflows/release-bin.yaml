@@ -24,6 +24,10 @@ jobs:
       - name: Compile Native
         run: cargo build --release --locked --manifest-path=roles/pool/Cargo.toml
 
+      - name: Install aarch64-apple-darwin target
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin
+
       - name: Compile MacOS ARM64
         if: matrix.os == 'macos-latest'
         run: cargo build --release --locked --manifest-path=roles/pool/Cargo.toml --target=aarch64-apple-darwin
