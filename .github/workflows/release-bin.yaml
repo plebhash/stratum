@@ -60,39 +60,105 @@ jobs:
           tag: ${{ github.ref }}
 
   release_jdc:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
-      - name: Build
+
+      - name: Compile Native
         run: cargo build --release --locked --manifest-path=roles/jd-client/Cargo.toml
-      - name: Upload binaries to release
+
+      - name: Install aarch64-apple-darwin target
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Compile MacOS ARM64
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --locked --manifest-path=roles/jd-client/Cargo.toml --target=aarch64-apple-darwin
+
+      - name: Upload Linux x86-64 binaries to release
+        if: matrix.os == 'ubuntu-latest'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: roles/target/release/jd_client
-          asset_name: jd_client
+          asset_name: jd_client-x86_64-linux-gnu
           tag: ${{ github.ref }}
+
+      - name: Upload MacOS x86-64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/release/jd_client
+          asset_name: jd_client-x86_64-apple-darwin
+          tag: ${{ github.ref }}
+
+      - name: Upload MacOS ARM64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/aarch64-apple-darwin/release/jd_client
+          asset_name: jd_client-aarch64-apple-darwin
+          tag: ${{ github.ref }}
+
   release_jds:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
-      - name: Build
+
+      - name: Compile Native
         run: cargo build --release --locked --manifest-path=roles/jd-server/Cargo.toml
-      - name: Upload binaries to release
+
+      - name: Install aarch64-apple-darwin target
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Compile MacOS ARM64
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --locked --manifest-path=roles/jd-server/Cargo.toml --target=aarch64-apple-darwin
+
+      - name: Upload Linux x86-64 binaries to release
+        if: matrix.os == 'ubuntu-latest'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: roles/target/release/jd_server
-          asset_name: jd_server
+          asset_name: jd_server-x86_64-linux-gnu
           tag: ${{ github.ref }}
+
+      - name: Upload MacOS x86-64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/release/jd_server
+          asset_name: jd_server-x86_64-apple-darwin
+          tag: ${{ github.ref }}
+
+      - name: Upload MacOS ARM64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/aarch64-apple-darwin/release/jd_server
+          asset_name: jd_server-aarch64-apple-darwin
+          tag: ${{ github.ref }}
+
   release_proxy:
     runs-on: ubuntu-latest
     steps:
@@ -110,20 +176,53 @@ jobs:
           file: roles/target/release/mining_proxy_sv2
           asset_name: mining_proxy_sv2
           tag: ${{ github.ref }}
+
   release_translator:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
-      - name: Build
+
+      - name: Compile Native
         run: cargo build --release --locked --manifest-path=roles/translator/Cargo.toml
-      - name: Upload binaries to release
+
+      - name: Install aarch64-apple-darwin target
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Compile MacOS ARM64
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --locked --manifest-path=roles/translator/Cargo.toml --target=aarch64-apple-darwin
+
+      - name: Upload Linux x86-64 binaries to release
+        if: matrix.os == 'ubuntu-latest'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: roles/target/release/translator_sv2
-          asset_name: translator_sv2
+          asset_name: translator_sv2-x86_64-linux-gnu
+          tag: ${{ github.ref }}
+
+      - name: Upload MacOS x86-64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/release/translator_sv2
+          asset_name: translator_sv2-x86_64-apple-darwin
+          tag: ${{ github.ref }}
+
+      - name: Upload MacOS ARM64 binaries to release
+        if: matrix.os == 'macos-latest'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: roles/target/aarch64-apple-darwin/release/translator_sv2
+          asset_name: translator_sv2-aarch64-apple-darwin
           tag: ${{ github.ref }}
