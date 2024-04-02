@@ -4,6 +4,7 @@ git fetch origin main
 git fetch origin dev
 
 git branch -a
+echo "aaaaaaaa"
 
 # Get the list of paths to `Cargo.toml` files
 crates=$(find . -name Cargo.toml -exec dirname {} \; | sort)
