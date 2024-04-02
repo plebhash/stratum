@@ -16,7 +16,7 @@ binary_codec_sv2 = {version = "^1.0.0", path = "../no-serde-sv2/codec", optional
 derive_codec_sv2 = {version = "^1.0.0", path = "../no-serde-sv2/derive_codec", optional = true}
 tracing = {version = "0.1"}
 hex = "0.4.3"
-asdasda
+asdas
 
 [features]
 default = ["core"]
