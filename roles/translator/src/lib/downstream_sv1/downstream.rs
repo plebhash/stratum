@@ -1,6 +1,6 @@
 use crate::{
     downstream_sv1,
-    error::ProxyResult,
+    downstream_sv1::error::{TProxyDownstreamResult, TProxyDownstreamError},
     proxy_config::{DownstreamDifficultyConfig, UpstreamDifficultyConfig},
     status,
 };
@@ -22,7 +22,6 @@ use roles_logic_sv2::{
     utils::Mutex,
 };
 
-use crate::error::Error;
 use futures::select;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
@@ -107,7 +106,7 @@ impl Downstream {
         host: String,
         difficulty_config: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
-    ) {
+    ) -> TProxyDownstreamResult<'static, ()> {
         let stream = std::sync::Arc::new(stream);
 
         // Reads and writes from Downstream SV1 Mining Device Client
@@ -173,23 +172,17 @@ impl Downstream {
                                 // if message is Submit Shares update difficulty management
                                 if let v1::Message::StandardRequest(standard_req) = incoming.clone() {
                                     if let Ok(Submit{..}) = standard_req.try_into() {
-                                        handle_result!(tx_status_reader, Self::save_share(self_.clone()));
+                                        Self::save_share(self_.clone())?;
                                     }
                                 }
 
-                                let res = Self::handle_incoming_sv1(self_.clone(), incoming).await;
-                                handle_result!(tx_status_reader, res);
+                                Self::handle_incoming_sv1(self_.clone(), incoming).await?;
                             }
                             Some(Err(_)) => {
-                                handle_result!(tx_status_reader, Err(Error::Sv1MessageTooLong));
+                                return Err(TProxyDownstreamError::V1MessageTooLong);
                             }
                             None => {
-                                handle_result!(tx_status_reader, Err(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::ConnectionAborted,
-                                        "Connection closed by client"
-                                    )
-                                ));
+                                return Err(TProxyDownstreamError::ConnectionAborted);
                             }
                         }
                     },
@@ -200,6 +193,8 @@ impl Downstream {
             }
             kill(&tx_shutdown_clone).await;
             warn!("Downstream: Shutting down sv1 downstream reader");
+
+            Ok::<(), TProxyDownstreamError>(())
         });
 
         let rx_shutdown_clone = rx_shutdown.clone();
@@ -242,7 +237,7 @@ impl Downstream {
         let tx_status_notify = tx_status;
         let self_ = downstream.clone();
 
-        let _notify_task = task::spawn(async move {
+        task::spawn(async move {
             let timeout_timer = std::time::Instant::now();
             let mut first_sent = false;
             loop {
@@ -254,28 +249,15 @@ impl Downstream {
                     }
                 };
                 if is_a && !first_sent && last_notify.is_some() {
-                    let target = handle_result!(
-                        tx_status_notify,
-                        Self::hash_rate_to_target(downstream.clone())
-                    );
+                    let target = Self::hash_rate_to_target(downstream.clone())?;
                     // make sure the mining start time is initialized and reset number of shares submitted
-                    handle_result!(
-                        tx_status_notify,
-                        Self::init_difficulty_management(downstream.clone(), &target).await
-                    );
-                    let message =
-                        handle_result!(tx_status_notify, Self::get_set_difficulty(target));
-                    handle_result!(
-                        tx_status_notify,
-                        Downstream::send_message_downstream(downstream.clone(), message).await
-                    );
+                    Self::init_difficulty_management(downstream.clone(), target.clone()).await?;
+                    let message = Self::get_set_difficulty(target)?;
+                    Downstream::send_message_downstream(downstream.clone(), message).await?;
 
                     let sv1_mining_notify_msg = last_notify.clone().unwrap();
                     let message: json_rpc::Message = sv1_mining_notify_msg.into();
-                    handle_result!(
-                        tx_status_notify,
-                        Downstream::send_message_downstream(downstream.clone(), message).await
-                    );
+                    Downstream::send_message_downstream(downstream.clone(), message).await?;
                     if let Err(_e) = downstream.clone().safe_lock(|s| {
                         s.first_job_received = true;
                     }) {
@@ -288,12 +270,11 @@ impl Downstream {
                     select! {
                         res = rx_sv1_notify.recv().fuse() => {
                             // if hashrate has changed, update difficulty management, and send new mining.set_difficulty
-                            handle_result!(tx_status_notify, Self::try_update_difficulty_settings(downstream.clone()).await);
-
+                            Self::try_update_difficulty_settings(downstream.clone()).await?;
 
                             let sv1_mining_notify_msg = handle_result!(tx_status_notify, res);
                             let message: json_rpc::Message = sv1_mining_notify_msg.into();
-                            handle_result!(tx_status_notify, Downstream::send_message_downstream(downstream.clone(), message).await);
+                            Downstream::send_message_downstream(downstream.clone(), message).await?;
                         },
                         _ = rx_shutdown.recv().fuse() => {
                                 break;
@@ -317,7 +298,10 @@ impl Downstream {
                 "Downstream: Shutting down sv1 downstream job notifier for {}",
                 &host
             );
+            Ok::<(), TProxyDownstreamError>(())
         });
+
+        Ok(())
     }
 
     /// Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices) and create a
@@ -330,7 +314,7 @@ impl Downstream {
         bridge: Arc<Mutex<crate::proxy::Bridge>>,
         downstream_difficulty_config: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
-    ) {
+    ) -> TProxyDownstreamResult<()>{
         task::spawn(async move {
             let downstream_listener = TcpListener::bind(downstream_addr).await.unwrap();
             let mut downstream_incoming = downstream_listener.incoming();
@@ -359,14 +343,16 @@ impl Downstream {
                             downstream_difficulty_config.clone(),
                             upstream_difficulty_config.clone(),
                         )
-                        .await;
+                        .await?;
                     }
                     Err(e) => {
                         tracing::error!("Failed to create a new downstream connection: {:?}", e);
                     }
                 }
             }
+            Ok::<(), TProxyDownstreamError>(())
         });
+        Ok(())
     }
 
     /// As SV1 messages come in, determines if the message response needs to be translated to SV2
@@ -375,7 +361,7 @@ impl Downstream {
     async fn handle_incoming_sv1(
         self_: Arc<Mutex<Self>>,
         message_sv1: json_rpc::Message,
-    ) -> Result<(), super::super::error::Error<'static>> {
+    ) -> TProxyDownstreamResult<'static, ()> {
         // `handle_message` in `IsServer` trait + calls `handle_request`
         // TODO: Map err from V1Error to Error::V1Error
         let response = self_.safe_lock(|s| s.handle_message(message_sv1)).unwrap();
@@ -387,9 +373,7 @@ impl Downstream {
                     // message will be sent to the upstream Translator to be translated to SV2 and
                     // forwarded to the `Upstream`
                     // let sender = self_.safe_lock(|s| s.connection.sender_upstream)
-                    if let Err(e) = Self::send_message_downstream(self_, r.into()).await {
-                        return Err(e.into());
-                    }
+                    Self::send_message_downstream(self_, r.into()).await?;
                     Ok(())
                 } else {
                     // If None response is received, indicates this SV1 message received from the
@@ -406,10 +390,13 @@ impl Downstream {
     pub(super) async fn send_message_downstream(
         self_: Arc<Mutex<Self>>,
         response: json_rpc::Message,
-    ) -> Result<(), async_channel::SendError<v1::Message>> {
+    ) -> TProxyDownstreamResult<'static, ()> {
         let sender = self_.safe_lock(|s| s.tx_outgoing.clone()).unwrap();
         debug!("To DOWN: {:?}", response);
-        sender.send(response).await
+        match sender.send(response).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(TProxyDownstreamError::Send(e))
+        }
     }
 
     /// Send SV1 response message that is generated by `Downstream` (as opposed to being received
@@ -417,7 +404,7 @@ impl Downstream {
     pub(super) async fn send_message_upstream(
         self_: Arc<Mutex<Self>>,
         msg: DownstreamMessages,
-    ) -> ProxyResult<'static, ()> {
+    ) -> TProxyDownstreamResult<'static, ()> {
         let sender = self_.safe_lock(|s| s.tx_sv1_bridge.clone()).unwrap();
         debug!("To Bridge: {:?}", msg);
         let _ = sender.send(msg).await;

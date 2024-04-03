@@ -4,6 +4,8 @@ pub mod diff_management;
 pub mod downstream;
 pub use downstream::Downstream;
 
+pub mod error;
+
 /// This constant is used as a check to ensure clients
 /// do not send a mining.subscribe and never a mining.authorize
 /// since they will take up a tcp connection but never be allowed to

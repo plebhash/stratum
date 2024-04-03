@@ -72,8 +72,6 @@ pub enum Error<'a> {
     // used to handle SV2 protocol error messages from pool
     #[allow(clippy::enum_variant_names)]
     Sv2ProtocolError(Mining<'a>),
-    #[allow(clippy::enum_variant_names)]
-    TargetError(roles_logic_sv2::errors::Error),
     Sv1MessageTooLong,
 }
 
@@ -106,9 +104,6 @@ impl<'a> fmt::Display for Error<'a> {
             Infallible(ref e) => write!(f, "Infallible Error:`{:?}`", e),
             Sv2ProtocolError(ref e) => {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{:?}`", e)
-            }
-            TargetError(ref e) => {
-                write!(f, "Impossible to get target from hashrate: `{:?}`", e)
             }
             Sv1MessageTooLong => {
                 write!(f, "Received an sv1 message that is longer than max len")

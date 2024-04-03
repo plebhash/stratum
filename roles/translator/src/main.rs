@@ -173,7 +173,7 @@ async fn main() {
         );
 
         // Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices)
-        downstream_sv1::Downstream::accept_connections(
+        let _ = downstream_sv1::Downstream::accept_connections(
             downstream_addr,
             tx_sv1_bridge,
             tx_sv1_notify,
