@@ -15,9 +15,7 @@ use v1::{client_to_server::Submit, server_to_client, utils::HexU32Be};
 use super::error::{TProxyBridgeError, TProxyBridgeResult};
 use super::super::{
     downstream_sv1::{DownstreamMessages, SetDownstreamTarget, SubmitShareWithChannelId},
-    status,
 };
-use error_handling::handle_result;
 use roles_logic_sv2::{channel_logic::channel_factory::OnNewShare, Error as RolesLogicError};
 use tracing::{debug, error, info};
 
@@ -42,9 +40,6 @@ pub struct Bridge {
     /// Sends SV1 `mining.notify` message (translated from the SV2 `SetNewPrevHash` and
     /// `NewExtendedMiningJob` messages stored in the `NextMiningNotify`) to the `Downstream`.
     tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
-    /// Allows the bridge the ability to communicate back to the main thread any status updates
-    /// that would interest the main thread for error handling
-    tx_status: status::Sender,
     /// Stores the most recent SV1 `mining.notify` values to be sent to the `Downstream` upon
     /// receiving a new SV2 `SetNewPrevHash` and `NewExtendedMiningJob` messages **before** any
     /// Downstream role connects to the proxy.
@@ -72,7 +67,6 @@ impl Bridge {
         rx_sv2_set_new_prev_hash: Receiver<SetNewPrevHash<'static>>,
         rx_sv2_new_ext_mining_job: Receiver<NewExtendedMiningJob<'static>>,
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
-        tx_status: status::Sender,
         extranonces: ExtendedExtranonce,
         target: Arc<Mutex<Vec<u8>>>,
         up_id: u32,
@@ -88,7 +82,6 @@ impl Bridge {
             rx_sv2_set_new_prev_hash,
             rx_sv2_new_ext_mining_job,
             tx_sv1_notify,
-            tx_status,
             last_notify: None,
             channel_factory: ProxyExtendedChannelFactory::new(
                 ids,
@@ -450,12 +443,11 @@ impl Bridge {
     /// `SetNewPrevHash` `job_id`, an error has occurred on the Upstream pool role and the
     /// connection will close.
     fn handle_new_extended_mining_job(self_: Arc<Mutex<Self>>) -> TProxyBridgeResult<'static, ()> {
-        let (tx_sv1_notify, rx_sv2_new_ext_mining_job, tx_status) = self_
+        let (tx_sv1_notify, rx_sv2_new_ext_mining_job) = self_
             .safe_lock(|s| {
                 (
                     s.tx_sv1_notify.clone(),
                     s.rx_sv2_new_ext_mining_job.clone(),
-                    s.tx_status.clone(),
                 )
             })
             .unwrap();
@@ -463,10 +455,7 @@ impl Bridge {
         task::spawn(async move {
             loop {
                 // Receive `NewExtendedMiningJob` from `Upstream`
-                let sv2_new_extended_mining_job: NewExtendedMiningJob = handle_result!(
-                    tx_status.clone(),
-                    rx_sv2_new_ext_mining_job.clone().recv().await
-                );
+                let sv2_new_extended_mining_job: NewExtendedMiningJob = rx_sv2_new_ext_mining_job.clone().recv().await?;
                 debug!(
                     "handle_new_extended_mining_job job_id: {:?}",
                     &sv2_new_extended_mining_job.job_id
@@ -480,6 +469,8 @@ impl Bridge {
                 crate::upstream_sv2::upstream::IS_NEW_JOB_HANDLED
                     .store(true, std::sync::atomic::Ordering::SeqCst);
             }
+
+            #[allow(unreachable_code)]
             Ok::<(), TProxyBridgeError>(())
         });
 
