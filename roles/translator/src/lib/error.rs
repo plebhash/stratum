@@ -1,3 +1,4 @@
+use crate::downstream_sv1::error::TProxyDownstreamError;
 use roles_logic_sv2::{
     mining_sv2::{ExtendedExtranonce, NewExtendedMiningJob, SetCustomMiningJob},
     parsers::Mining,
@@ -72,9 +73,7 @@ pub enum Error<'a> {
     // used to handle SV2 protocol error messages from pool
     #[allow(clippy::enum_variant_names)]
     Sv2ProtocolError(Mining<'a>),
-    #[allow(clippy::enum_variant_names)]
-    TargetError(roles_logic_sv2::errors::Error),
-    Sv1MessageTooLong,
+    Downstream(TProxyDownstreamError<'a>),
 }
 
 impl<'a> fmt::Display for Error<'a> {
@@ -107,12 +106,7 @@ impl<'a> fmt::Display for Error<'a> {
             Sv2ProtocolError(ref e) => {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{:?}`", e)
             }
-            TargetError(ref e) => {
-                write!(f, "Impossible to get target from hashrate: `{:?}`", e)
-            }
-            Sv1MessageTooLong => {
-                write!(f, "Received an sv1 message that is longer than max len")
-            }
+            Downstream(e) => write!(f, "Downstream error: `{:?}`", e)
         }
     }
 }
@@ -285,4 +279,8 @@ impl<'a> From<Mining<'a>> for Error<'a> {
     fn from(e: Mining<'a>) -> Self {
         Error::Sv2ProtocolError(e)
     }
+}
+
+impl<'a> From<TProxyDownstreamError<'a>> for Error<'a> {
+    fn from(e: TProxyDownstreamError<'a>) -> Self { Error::Downstream(e) }
 }
