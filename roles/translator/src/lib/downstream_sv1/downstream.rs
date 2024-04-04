@@ -2,7 +2,6 @@ use crate::{
     downstream_sv1,
     downstream_sv1::error::{TProxyDownstreamResult, TProxyDownstreamError},
     proxy_config::{DownstreamDifficultyConfig, UpstreamDifficultyConfig},
-    status,
 };
 use async_channel::{bounded, Receiver, Sender};
 use async_std::{
@@ -11,7 +10,6 @@ use async_std::{
     prelude::*,
     task,
 };
-use error_handling::handle_result;
 use futures::FutureExt;
 use tokio::sync::broadcast;
 
@@ -99,7 +97,6 @@ impl Downstream {
         connection_id: u32,
         tx_sv1_bridge: Sender<DownstreamMessages>,
         mut rx_sv1_notify: broadcast::Receiver<server_to_client::Notify<'static>>,
-        tx_status: status::Sender,
         extranonce1: Vec<u8>,
         last_notify: Option<server_to_client::Notify<'static>>,
         extranonce2_len: usize,
@@ -144,7 +141,6 @@ impl Downstream {
 
         let rx_shutdown_clone = rx_shutdown.clone();
         let tx_shutdown_clone = tx_shutdown.clone();
-        let tx_status_reader = tx_status.clone();
         // Task to read from SV1 Mining Device Client socket via `socket_reader`. Depending on the
         // SV1 message received, a message response is sent directly back to the SV1 Downstream
         // role, or the message is sent upwards to the Bridge for translation into a SV2 message
@@ -165,7 +161,7 @@ impl Downstream {
                         match res {
                             Some(Ok(incoming)) => {
                                 debug!("Receiving from Mining Device {}: {:?}", &host_, &incoming);
-                                let incoming: json_rpc::Message = handle_result!(tx_status_reader, serde_json::from_str(&incoming));
+                                let incoming: json_rpc::Message = serde_json::from_str(&incoming)?;
                                 // Handle what to do with message
                                 // if let json_rpc::Message
 
@@ -199,7 +195,6 @@ impl Downstream {
 
         let rx_shutdown_clone = rx_shutdown.clone();
         let tx_shutdown_clone = tx_shutdown.clone();
-        let tx_status_writer = tx_status.clone();
         let host_ = host.clone();
 
         // Task to receive SV1 message responses to SV1 messages that do NOT need translation.
@@ -208,7 +203,7 @@ impl Downstream {
             loop {
                 select! {
                     res = receiver_outgoing.recv().fuse() => {
-                        let to_send = handle_result!(tx_status_writer, res);
+                        let to_send = res?;
                         let to_send = match serde_json::to_string(&to_send) {
                             Ok(string) => format!("{}\n", string),
                             Err(_e) => {
@@ -217,10 +212,9 @@ impl Downstream {
                             }
                         };
                         debug!("Sending to Mining Device: {} - {:?}", &host_, &to_send);
-                        let res = (&*socket_writer_clone)
+                        (&*socket_writer_clone)
                                     .write_all(to_send.as_bytes())
-                                    .await;
-                        handle_result!(tx_status_writer, res);
+                                    .await?;
                     },
                     _ = rx_shutdown_clone.recv().fuse() => {
                             break;
@@ -232,9 +226,10 @@ impl Downstream {
                 "Downstream: Shutting down sv1 downstream writer: {}",
                 &host_
             );
+
+            Ok::<(), TProxyDownstreamError>(())
         });
 
-        let tx_status_notify = tx_status;
         let self_ = downstream.clone();
 
         task::spawn(async move {
@@ -272,7 +267,7 @@ impl Downstream {
                             // if hashrate has changed, update difficulty management, and send new mining.set_difficulty
                             Self::try_update_difficulty_settings(downstream.clone()).await?;
 
-                            let sv1_mining_notify_msg = handle_result!(tx_status_notify, res);
+                            let sv1_mining_notify_msg = res?;
                             let message: json_rpc::Message = sv1_mining_notify_msg.into();
                             Downstream::send_message_downstream(downstream.clone(), message).await?;
                         },
@@ -310,7 +305,6 @@ impl Downstream {
         downstream_addr: SocketAddr,
         tx_sv1_submit: Sender<DownstreamMessages>,
         tx_mining_notify: broadcast::Sender<server_to_client::Notify<'static>>,
-        tx_status: status::Sender,
         bridge: Arc<Mutex<crate::proxy::Bridge>>,
         downstream_difficulty_config: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
@@ -335,7 +329,6 @@ impl Downstream {
                             opened.channel_id,
                             tx_sv1_submit.clone(),
                             tx_mining_notify.subscribe(),
-                            tx_status.listener_to_connection(),
                             opened.extranonce,
                             opened.last_notify,
                             opened.extranonce2_len as usize,

@@ -176,7 +176,6 @@ async fn main() {
             downstream_addr,
             tx_sv1_bridge,
             tx_sv1_notify,
-            status::Sender::DownstreamListener(tx_status.clone()),
             b,
             proxy_config.downstream_difficulty_config,
             diff_config,
