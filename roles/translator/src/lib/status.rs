@@ -123,19 +123,12 @@ pub async fn handle_error(
         Error::CodecNoise(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
         // Errors from `framing_sv2` crate.
         Error::FramingSv2(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
-        //If the pool sends the tproxy an invalid extranonce
-        Error::InvalidExtranonce(_) => {
-            send_status(sender, e, error_handling::ErrorBranch::Break).await
-        }
         // Errors on bad `TcpStream` connection.
         Error::Io(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
         // Errors on bad `String` to `int` conversion.
         Error::ParseInt(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
         // Errors from `roles_logic_sv2` crate.
         Error::RolesSv2Logic(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
-        Error::UpstreamIncoming(_) => {
-            send_status(sender, e, error_handling::ErrorBranch::Break).await
-        }
         // SV1 protocol library error
         Error::V1Protocol(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
         Error::SubprotocolMining(_) => {
@@ -171,6 +164,9 @@ pub async fn handle_error(
             }
         }
         Error::Downstream(_) => {
+            send_status(sender, e, error_handling::ErrorBranch::Break).await
+        }
+        Error::Upstream(_) => {
             send_status(sender, e, error_handling::ErrorBranch::Break).await
         }
     }

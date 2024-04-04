@@ -1,4 +1,5 @@
 use crate::downstream_sv1::error::TProxyDownstreamError;
+use crate::upstream_sv2::error::TProxyUpstreamError;
 use roles_logic_sv2::{
     mining_sv2::{ExtendedExtranonce, NewExtendedMiningJob, SetCustomMiningJob},
     parsers::Mining,
@@ -49,13 +50,10 @@ pub enum Error<'a> {
     FramingSv2(framing_sv2::Error),
     /// Errors on bad `TcpStream` connection.
     Io(std::io::Error),
-    /// Errors due to invalid extranonce from upstream
-    InvalidExtranonce(String),
     /// Errors on bad `String` to `int` conversion.
     ParseInt(std::num::ParseIntError),
     /// Errors from `roles_logic_sv2` crate.
     RolesSv2Logic(roles_logic_sv2::errors::Error),
-    UpstreamIncoming(roles_logic_sv2::errors::Error),
     /// SV1 protocol library error
     V1Protocol(v1::error::Error<'a>),
     #[allow(dead_code)]
@@ -74,6 +72,7 @@ pub enum Error<'a> {
     #[allow(clippy::enum_variant_names)]
     Sv2ProtocolError(Mining<'a>),
     Downstream(TProxyDownstreamError<'a>),
+    Upstream(TProxyUpstreamError<'a>)
 }
 
 impl<'a> fmt::Display for Error<'a> {
@@ -86,13 +85,11 @@ impl<'a> fmt::Display for Error<'a> {
             BinarySv2(ref e) => write!(f, "Binary SV2 error: `{:?}`", e),
             CodecNoise(ref e) => write!(f, "Noise error: `{:?}", e),
             FramingSv2(ref e) => write!(f, "Framing SV2 error: `{:?}`", e),
-            InvalidExtranonce(ref e) => write!(f, "Invalid Extranonce error: `{:?}", e),
             Io(ref e) => write!(f, "I/O error: `{:?}", e),
             ParseInt(ref e) => write!(f, "Bad convert from `String` to `int`: `{:?}`", e),
             RolesSv2Logic(ref e) => write!(f, "Roles SV2 Logic Error: `{:?}`", e),
             V1Protocol(ref e) => write!(f, "V1 Protocol Error: `{:?}`", e),
             SubprotocolMining(ref e) => write!(f, "Subprotocol Mining Error: `{:?}`", e),
-            UpstreamIncoming(ref e) => write!(f, "Upstream parse incoming error: `{:?}`", e),
             PoisonLock => write!(f, "Poison Lock error"),
             ChannelErrorReceiver(ref e) => write!(f, "Channel receive error: `{:?}`", e),
             TokioChannelErrorRecv(ref e) => write!(f, "Channel receive error: `{:?}`", e),
@@ -106,7 +103,8 @@ impl<'a> fmt::Display for Error<'a> {
             Sv2ProtocolError(ref e) => {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{:?}`", e)
             }
-            Downstream(e) => write!(f, "Downstream error: `{:?}`", e)
+            Downstream(e) => write!(f, "Downstream error: `{:?}`", e),
+            Upstream(e) => write!(f, "Upstream error: `{:?}`", e)
         }
     }
 }
@@ -283,4 +281,8 @@ impl<'a> From<Mining<'a>> for Error<'a> {
 
 impl<'a> From<TProxyDownstreamError<'a>> for Error<'a> {
     fn from(e: TProxyDownstreamError<'a>) -> Self { Error::Downstream(e) }
+}
+
+impl<'a> From<TProxyUpstreamError<'a>> for Error<'a> {
+    fn from(e: TProxyUpstreamError<'a>) -> Self { Error::Upstream(e) }
 }
