@@ -6,7 +6,7 @@ use crate::{
     },
     proxy_config::UpstreamDifficultyConfig,
     status,
-    upstream_sv2::{EitherFrame, Message, StdFrame, UpstreamConnection},
+    upstream_sv2::{EitherFrame, Message, StdFrame, UpstreamConnection, error::{TProxyUpstreamError, TProxyUpstreamResult, UpstreamChannelSendError}},
 };
 use async_channel::{Receiver, Sender};
 use async_std::{net::TcpStream, task};
@@ -124,7 +124,7 @@ impl Upstream {
         tx_status: status::Sender,
         target: Arc<Mutex<Vec<u8>>>,
         difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
-    ) -> ProxyResult<'static, Arc<Mutex<Self>>> {
+    ) -> TProxyUpstreamResult<'static, Arc<Mutex<Self>>> {
         // Connect to the SV2 Upstream role retry connection every 5 seconds.
         let socket = loop {
             match TcpStream::connect(address).await {
@@ -175,13 +175,14 @@ impl Upstream {
     }
 
     /// Setups the connection with the SV2 Upstream role (most typically a SV2 Pool).
+    /// Setups the connection with the SV2 Upstream role (most typically a SV2 Pool).
     pub async fn connect(
         self_: Arc<Mutex<Self>>,
         min_version: u16,
         max_version: u16,
     ) -> ProxyResult<'static, ()> {
         // Get the `SetupConnection` message with Mining Device information (currently hard coded)
-        let setup_connection = Self::get_setup_connection_message(min_version, max_version, false)?;
+        let setup_connection = Self::get_setup_connection_message(min_version, max_version, false).unwrap();
         let mut connection = self_
             .safe_lock(|s| s.connection.clone())
             .map_err(|_e| PoisonLock)?;
@@ -190,7 +191,7 @@ impl Upstream {
         let sv2_frame: StdFrame = Message::Common(setup_connection.into()).try_into()?;
         // Send the `SetupConnection` frame to the SV2 Upstream role
         // Only one Upstream role is supported, panics if multiple connections are encountered
-        connection.send(sv2_frame).await?;
+        connection.send(sv2_frame).await.unwrap();
 
         // Wait for the SV2 Upstream to respond with either a `SetupConnectionSuccess` or a
         // `SetupConnectionError` inside a SV2 binary message frame
@@ -249,7 +250,7 @@ impl Upstream {
             .map_err(|_e| PoisonLock)??;
 
         let sv2_frame: StdFrame = Message::Mining(open_channel).try_into()?;
-        connection.send(sv2_frame).await?;
+        connection.send(sv2_frame).await.unwrap();
 
         Ok(())
     }
@@ -257,7 +258,7 @@ impl Upstream {
     /// Parses the incoming SV2 message from the Upstream role and routes the message to the
     /// appropriate handler.
     #[allow(clippy::result_large_err)]
-    pub fn parse_incoming(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub fn parse_incoming(self_: Arc<Mutex<Self>>) -> TProxyUpstreamResult<'static, ()> {
         let clone = self_.clone();
         let (
             tx_frame,
@@ -277,16 +278,18 @@ impl Upstream {
                     s.tx_status.clone(),
                 )
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyUpstreamError::PoisonLock)?;
         {
             let self_ = self_.clone();
-            let tx_status = tx_status.clone();
             task::spawn(async move {
                 // No need to start diff management immediatly
                 async_std::task::sleep(Duration::from_secs(10)).await;
                 loop {
-                    handle_result!(tx_status, Self::try_update_hashrate(self_.clone()).await);
+                    Self::try_update_hashrate(self_.clone()).await?
                 }
+
+                #[allow(unreachable_code)]
+                Ok::<(), TProxyUpstreamError>(())
             });
         }
 
@@ -334,14 +337,11 @@ impl Upstream {
                         let frame: EitherFrame = frame.into();
 
                         // Relay the response message to the Upstream role
-                        handle_result!(
-                            tx_status,
-                            tx_frame.send(frame).await.map_err(|e| {
-                                super::super::error::Error::ChannelErrorSender(
-                                    super::super::error::ChannelSendError::General(e.to_string()),
-                                )
-                            })
-                        );
+                        tx_frame.send(frame).await.map_err(|e| {
+                            TProxyUpstreamError::ChannelSender(
+                                UpstreamChannelSendError::General(e.to_string()),
+                            )
+                        })?
                     }
                     // Does not send the messages anywhere, but instead handle them internally
                     Ok(SendTo::None(Some(m))) => {
@@ -376,23 +376,19 @@ impl Upstream {
                                     extranonce_prefix.clone(), range_0.clone(), range_1.clone(), range_2.clone(),
                                 ).ok_or_else(|| InvalidExtranonce(format!("Impossible to create a valid extended extranonce from {:?} {:?} {:?} {:?}",
                                     extranonce_prefix,range_0,range_1,range_2))));
-                                handle_result!(
-                                    tx_status,
-                                    tx_sv2_extranonce.send((extended, m.channel_id)).await
-                                );
+                                tx_sv2_extranonce.send((extended, m.channel_id)).await?
                             }
                             Mining::NewExtendedMiningJob(m) => {
                                 let job_id = m.job_id;
-                                let res = self_
+                                self_
                                     .safe_lock(|s| {
                                         let _ = s.job_id.insert(job_id);
                                     })
-                                    .map_err(|_e| PoisonLock);
-                                handle_result!(tx_status, res);
-                                handle_result!(tx_status, tx_sv2_new_ext_mining_job.send(m).await);
+                                    .map_err(|_e| TProxyUpstreamError::PoisonLock)?;
+                                tx_sv2_new_ext_mining_job.send(m).await?;
                             }
                             Mining::SetNewPrevHash(m) => {
-                                handle_result!(tx_status, tx_sv2_set_new_prev_hash.send(m).await);
+                                tx_sv2_set_new_prev_hash.send(m).await?
                             }
                             Mining::CloseChannel(_m) => {
                                 error!("Received Mining::CloseChannel msg from upstream!");
@@ -432,6 +428,7 @@ impl Upstream {
                     }
                 }
             }
+            Ok::<(), TProxyUpstreamError>(())
         });
 
         Ok(())
@@ -458,7 +455,7 @@ impl Upstream {
     }
 
     #[allow(clippy::result_large_err)]
-    pub fn handle_submit(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub fn handle_submit(self_: Arc<Mutex<Self>>) -> TProxyUpstreamResult<'static, ()> {
         let clone = self_.clone();
         let (tx_frame, receiver, tx_status) = clone
             .safe_lock(|s| {
@@ -468,7 +465,7 @@ impl Upstream {
                     s.tx_status.clone(),
                 )
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyUpstreamError::PoisonLock)?;
 
         task::spawn(async move {
             loop {
@@ -496,15 +493,13 @@ impl Upstream {
                 // Doesnt actually send because of Braiins Pool issue that needs to be fixed
 
                 let frame: EitherFrame = frame.into();
-                handle_result!(
-                    tx_status,
-                    tx_frame.send(frame).await.map_err(|e| {
-                        super::super::error::Error::ChannelErrorSender(
-                            super::super::error::ChannelSendError::General(e.to_string()),
-                        )
-                    })
-                );
+                tx_frame.send(frame).await.map_err(|e| {
+                    TProxyUpstreamError::ChannelSender(
+                        UpstreamChannelSendError::General(e.to_string()),
+                    )
+                })?
             }
+            Ok::<(), TProxyUpstreamError>(())
         });
         Ok(())
     }
@@ -521,7 +516,7 @@ impl Upstream {
         min_version: u16,
         max_version: u16,
         is_work_selection_enabled: bool,
-    ) -> ProxyResult<'static, SetupConnection<'static>> {
+    ) -> TProxyUpstreamResult<'static, SetupConnection<'static>> {
         let endpoint_host = "0.0.0.0".to_string().into_bytes().try_into()?;
         let vendor = String::new().try_into()?;
         let hardware_version = String::new().try_into()?;

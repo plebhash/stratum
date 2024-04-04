@@ -1,8 +1,7 @@
 use super::Upstream;
 
 use super::super::{
-    error::{Error::PoisonLock, ProxyResult},
-    upstream_sv2::{EitherFrame, Message, StdFrame},
+    upstream_sv2::{EitherFrame, Message, StdFrame, error::{TProxyUpstreamError, TProxyUpstreamResult, UpstreamChannelSendError}},
 };
 use binary_sv2::u256_from_int;
 use roles_logic_sv2::{
@@ -12,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 impl Upstream {
     /// this function checks if the elapsed time since the last update has surpassed the config
-    pub(super) async fn try_update_hashrate(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub(super) async fn try_update_hashrate(self_: Arc<Mutex<Self>>) -> TProxyUpstreamResult<'static, ()> {
         let (channel_id_option, diff_mgmt, tx_frame) = self_
             .safe_lock(|u| {
                 (
@@ -21,13 +20,13 @@ impl Upstream {
                     u.connection.sender.clone(),
                 )
             })
-            .map_err(|_e| PoisonLock)?;
-        let channel_id = channel_id_option.ok_or(super::super::error::Error::RolesSv2Logic(
+            .map_err(|_e| TProxyUpstreamError::PoisonLock)?;
+        let channel_id = channel_id_option.ok_or(TProxyUpstreamError::RolesSv2Logic(
             RolesLogicError::NotFoundChannelId,
         ))?;
         let (timeout, new_hashrate) = diff_mgmt
             .safe_lock(|d| (d.channel_diff_update_interval, d.channel_nominal_hashrate))
-            .map_err(|_e| PoisonLock)?;
+            .map_err(|_e| TProxyUpstreamError::PoisonLock)?;
         // UPDATE CHANNEL
         let update_channel = UpdateChannel {
             channel_id,
@@ -39,8 +38,8 @@ impl Upstream {
         let frame: EitherFrame = either_frame.into();
 
         tx_frame.send(frame).await.map_err(|e| {
-            super::super::error::Error::ChannelErrorSender(
-                super::super::error::ChannelSendError::General(e.to_string()),
+            TProxyUpstreamError::ChannelSender(
+                UpstreamChannelSendError::General(e.to_string()),
             )
         })?;
         async_std::task::sleep(Duration::from_secs(timeout as u64)).await;
