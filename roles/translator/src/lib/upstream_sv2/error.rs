@@ -35,6 +35,9 @@ pub enum TProxyUpstreamError<'a> {
     BinarySv2(binary_sv2::Error),
     FramingSv2(framing_sv2::Error),
     ChannelSender(UpstreamChannelSendError<'a>),
+    ChannelReceiver(async_channel::RecvError),
+    InvalidExtranonce(String),
+    SubprotocolMining(String),
 }
 
 impl<'a> fmt::Display for TProxyUpstreamError<'a> {
@@ -46,7 +49,10 @@ impl<'a> fmt::Display for TProxyUpstreamError<'a> {
             TProxyUpstreamError::RolesSv2Logic(err) => write!(f, "Roles SV2 Logic error: {}", err),
             TProxyUpstreamError::BinarySv2(err) => write!(f, "Binary SV2 error: {:?}", err),
             TProxyUpstreamError::FramingSv2(err) => write!(f, "Framing SV2 error: `{:?}`", err),
-            TProxyUpstreamError::ChannelSender(err) => write!(f, "Channel Sender error: {:?}", err)
+            TProxyUpstreamError::ChannelSender(err) => write!(f, "Channel Sender error: {:?}", err),
+            TProxyUpstreamError::ChannelReceiver(err) => write!(f, "Channel Receiver error: {:?}", err),
+            TProxyUpstreamError::InvalidExtranonce(err) => write!(f, "Invalid Extranonce error: {:?}", err),
+            TProxyUpstreamError::SubprotocolMining(err) => write!(f, "Subprotocol Mining error: {:?}", err)
         }
     }
 }
@@ -54,6 +60,12 @@ impl<'a> fmt::Display for TProxyUpstreamError<'a> {
 impl<'a> From<std::io::Error> for TProxyUpstreamError<'a> {
     fn from(e: std::io::Error) -> Self {
         TProxyUpstreamError::Io(e)
+    }
+}
+
+impl<'a> From<async_channel::RecvError> for TProxyUpstreamError<'a> {
+    fn from(e: async_channel::RecvError) -> Self {
+        TProxyUpstreamError::ChannelReceiver(e)
     }
 }
 
