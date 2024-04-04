@@ -1,8 +1,8 @@
 use crate::{
     downstream_sv1::Downstream,
     error::{
-        Error::{CodecNoise, InvalidExtranonce, PoisonLock, UpstreamIncoming},
-        ProxyResult,
+        TProxyError::{CodecNoise, InvalidExtranonce, PoisonLock, UpstreamIncoming},
+        TProxyResult,
     },
     proxy_config::UpstreamDifficultyConfig,
     status,
@@ -180,7 +180,7 @@ impl Upstream {
         self_: Arc<Mutex<Self>>,
         min_version: u16,
         max_version: u16,
-    ) -> ProxyResult<'static, ()> {
+    ) -> TProxyResult<'static, ()> {
         // Get the `SetupConnection` message with Mining Device information (currently hard coded)
         let setup_connection = Self::get_setup_connection_message(min_version, max_version, false).unwrap();
         let mut connection = self_
@@ -303,7 +303,7 @@ impl Upstream {
                 let message_type =
                     incoming
                         .get_header()
-                        .ok_or(super::super::error::Error::FramingSv2(
+                        .ok_or(super::super::error::TProxyError::FramingSv2(
                             framing_sv2::Error::ExpectedSv2Frame,
                         ));
 
@@ -436,17 +436,17 @@ impl Upstream {
     #[allow(clippy::result_large_err)]
     fn get_job_id(
         self_: &Arc<Mutex<Self>>,
-    ) -> Result<Result<u32, super::super::error::Error<'static>>, super::super::error::Error<'static>>
+    ) -> Result<Result<u32, super::super::error::TProxyError<'static>>, super::super::error::TProxyError<'static>>
     {
         self_
             .safe_lock(|s| {
                 if s.is_work_selection_enabled() {
                     s.last_job_id
-                        .ok_or(super::super::error::Error::RolesSv2Logic(
+                        .ok_or(super::super::error::TProxyError::RolesSv2Logic(
                             RolesLogicError::NoValidTranslatorJob,
                         ))
                 } else {
-                    s.job_id.ok_or(super::super::error::Error::RolesSv2Logic(
+                    s.job_id.ok_or(super::super::error::TProxyError::RolesSv2Logic(
                         RolesLogicError::NoValidJob,
                     ))
                 }
@@ -475,7 +475,7 @@ impl Upstream {
                 let channel_id = self_
                     .safe_lock(|s| {
                         s.channel_id
-                            .ok_or(super::super::error::Error::RolesSv2Logic(
+                            .ok_or(super::super::error::TProxyError::RolesSv2Logic(
                                 RolesLogicError::NotFoundChannelId,
                             ))
                     })

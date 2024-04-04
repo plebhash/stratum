@@ -3,7 +3,7 @@ mod args;
 mod lib;
 
 use args::Args;
-use error::{Error, ProxyResult};
+use error::{TProxyError, TProxyResult};
 use lib::{downstream_sv1, error, proxy, proxy_config, status, upstream_sv2};
 use proxy_config::ProxyConfig;
 use roles_logic_sv2::utils::Mutex;
@@ -23,12 +23,12 @@ use crate::status::{State, Status};
 use tracing::{debug, error, info};
 /// Process CLI args, if any.
 #[allow(clippy::result_large_err)]
-fn process_cli_args<'a>() -> ProxyResult<'a, ProxyConfig> {
+fn process_cli_args<'a>() -> TProxyResult<'a, ProxyConfig> {
     let args = match Args::from_args() {
         Ok(cfg) => cfg,
         Err(help) => {
             error!("{}", help);
-            return Err(Error::BadCliArgs);
+            return Err(TProxyError::BadCliArgs);
         }
     };
     let config_file = std::fs::read_to_string(args.config_path)?;
@@ -164,7 +164,7 @@ async fn main() {
             target,
             up_id,
         );
-        proxy::Bridge::start(b.clone());
+        let _ = proxy::Bridge::start(b.clone());
 
         // Format `Downstream` connection address
         let downstream_addr = SocketAddr::new(
