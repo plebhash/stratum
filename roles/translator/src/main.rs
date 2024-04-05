@@ -3,7 +3,7 @@ mod args;
 mod lib;
 
 use args::Args;
-use error::{Error, ProxyResult};
+use error::{TProxyError, ProxyResult};
 use lib::{downstream_sv1, error, proxy, proxy_config, status, upstream_sv2};
 use proxy_config::ProxyConfig;
 use roles_logic_sv2::utils::Mutex;
@@ -28,7 +28,7 @@ fn process_cli_args<'a>() -> ProxyResult<'a, ProxyConfig> {
         Ok(cfg) => cfg,
         Err(help) => {
             error!("{}", help);
-            return Err(Error::BadCliArgs);
+            return Err(TProxyError::BadCliArgs);
         }
     };
     let config_file = std::fs::read_to_string(args.config_path)?;

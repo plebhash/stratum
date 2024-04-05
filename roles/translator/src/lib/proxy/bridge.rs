@@ -258,7 +258,7 @@ impl Bridge {
             Err(e) => {
                 let _ = tx_status
                     .send(status::Status {
-                        state: status::State::BridgeShutdown(crate::error::Error::Bridge(e)),
+                        state: status::State::BridgeShutdown(crate::error::TProxyError::Bridge(e)),
                     })
                     .await;
             }

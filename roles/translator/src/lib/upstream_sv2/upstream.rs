@@ -415,7 +415,7 @@ impl Upstream {
                     Ok(_) => panic!(),
                     Err(e) => {
                         let status = status::Status {
-                            state: status::State::UpstreamShutdown(crate::error::Error::Upstream(TProxyUpstreamError::Incoming(e))),
+                            state: status::State::UpstreamShutdown(crate::error::TProxyError::Upstream(TProxyUpstreamError::Incoming(e))),
                         };
                         error!(
                             "TERMINATING: Error handling pool role message: {:?}",
