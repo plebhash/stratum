@@ -169,5 +169,8 @@ pub async fn handle_error(
         Error::Upstream(_) => {
             send_status(sender, e, error_handling::ErrorBranch::Break).await
         }
+        Error::Bridge(_) => {
+            send_status(sender, e, error_handling::ErrorBranch::Break).await
+        }
     }
 }

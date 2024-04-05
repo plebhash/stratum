@@ -1,5 +1,6 @@
 use crate::downstream_sv1::error::TProxyDownstreamError;
 use crate::upstream_sv2::error::TProxyUpstreamError;
+use crate::proxy::error::TProxyBridgeError;
 use roles_logic_sv2::{
     mining_sv2::{ExtendedExtranonce, NewExtendedMiningJob, SetCustomMiningJob},
     parsers::Mining,
@@ -72,7 +73,8 @@ pub enum Error<'a> {
     #[allow(clippy::enum_variant_names)]
     Sv2ProtocolError(Mining<'a>),
     Downstream(TProxyDownstreamError<'a>),
-    Upstream(TProxyUpstreamError<'a>)
+    Upstream(TProxyUpstreamError<'a>),
+    Bridge(TProxyBridgeError<'a>)
 }
 
 impl<'a> fmt::Display for Error<'a> {
@@ -104,7 +106,8 @@ impl<'a> fmt::Display for Error<'a> {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{:?}`", e)
             }
             Downstream(e) => write!(f, "Downstream error: `{:?}`", e),
-            Upstream(e) => write!(f, "Upstream error: `{:?}`", e)
+            Upstream(e) => write!(f, "Upstream error: `{:?}`", e),
+            Bridge(e) => write!(f, "Bridge error: `{:?}`", e)
         }
     }
 }
@@ -285,4 +288,8 @@ impl<'a> From<TProxyDownstreamError<'a>> for Error<'a> {
 
 impl<'a> From<TProxyUpstreamError<'a>> for Error<'a> {
     fn from(e: TProxyUpstreamError<'a>) -> Self { Error::Upstream(e) }
+}
+
+impl<'a> From<TProxyBridgeError<'a>> for Error<'a> {
+    fn from(e: TProxyBridgeError<'a>) -> Self { Error::Bridge(e) }
 }

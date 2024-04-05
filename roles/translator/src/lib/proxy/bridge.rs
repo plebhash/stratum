@@ -12,12 +12,9 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use v1::{client_to_server::Submit, server_to_client, utils::HexU32Be};
 
+use super::error::{TProxyBridgeError, TProxyBridgeResult};
 use super::super::{
     downstream_sv1::{DownstreamMessages, SetDownstreamTarget, SubmitShareWithChannelId},
-    error::{
-        Error::{self, PoisonLock},
-        ProxyResult,
-    },
     status,
 };
 use error_handling::handle_result;
@@ -114,7 +111,7 @@ impl Bridge {
     pub fn on_new_sv1_connection(
         &mut self,
         hash_rate: f32,
-    ) -> ProxyResult<'static, OpenSv1Downstream> {
+    ) -> TProxyBridgeResult<'static, OpenSv1Downstream> {
         match self.channel_factory.new_extended_channel(0, hash_rate, 0) {
             Ok(messages) => {
                 for message in messages {
@@ -124,7 +121,7 @@ impl Bridge {
                             let extranonce2_len = success.extranonce_size;
                             self.target
                                 .safe_lock(|t| *t = success.target.to_vec())
-                                .map_err(|_e| PoisonLock)?;
+                                .map_err(|_e| TProxyBridgeError::PoisonLock)?;
                             return Ok(OpenSv1Downstream {
                                 channel_id: success.channel_id,
                                 last_notify: self.last_notify.clone(),
@@ -141,12 +138,12 @@ impl Bridge {
                 }
             }
             Err(_) => {
-                return Err(Error::SubprotocolMining(
+                return Err(TProxyBridgeError::SubprotocolMining(
                     "Bridge: failed to open new extended channel".to_string(),
                 ))
             }
         };
-        Err(Error::SubprotocolMining(
+        Err(TProxyBridgeError::SubprotocolMining(
             "Bridge: Invalid mining message when opening downstream connection".to_string(),
         ))
     }
@@ -191,13 +188,13 @@ impl Bridge {
     fn handle_update_downstream_target(
         self_: Arc<Mutex<Self>>,
         new_target: SetDownstreamTarget,
-    ) -> ProxyResult<'static, ()> {
+    ) -> TProxyBridgeResult<'static, ()> {
         self_
             .safe_lock(|b| {
                 b.channel_factory
                     .update_target_for_channel(new_target.channel_id, new_target.new_target);
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
         Ok(())
     }
     /// receives a `SubmitShareWithChannelId` and validates the shares and sends to `Upstream` if
@@ -205,7 +202,7 @@ impl Bridge {
     async fn handle_submit_shares(
         self_: Arc<Mutex<Self>>,
         share: SubmitShareWithChannelId,
-    ) -> ProxyResult<'static, ()> {
+    ) -> TProxyBridgeResult<'static, ()> {
         let (tx_sv2_submit_shares_ext, target_mutex, tx_status) = self_
             .safe_lock(|s| {
                 (
@@ -214,24 +211,24 @@ impl Bridge {
                     s.tx_status.clone(),
                 )
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
         let upstream_target: [u8; 32] = target_mutex
             .safe_lock(|t| t.clone())
-            .map_err(|_| PoisonLock)?
+            .map_err(|_| TProxyBridgeError::PoisonLock)?
             .try_into()?;
         let mut upstream_target: Target = upstream_target.into();
         self_
             .safe_lock(|s| s.channel_factory.set_target(&mut upstream_target))
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
 
         let sv2_submit = self_
             .safe_lock(|s| {
                 s.translate_submit(share.channel_id, share.share, share.version_rolling_mask)
             })
-            .map_err(|_| PoisonLock)??;
+            .map_err(|_| TProxyBridgeError::PoisonLock)??;
         let res = self_
             .safe_lock(|s| s.channel_factory.on_submit_shares_extended(sv2_submit))
-            .map_err(|_| PoisonLock);
+            .map_err(|_| TProxyBridgeError::PoisonLock);
 
         match res {
             Ok(Ok(OnNewShare::SendErrorDownstream(e))) => {
@@ -261,7 +258,7 @@ impl Bridge {
             Err(e) => {
                 let _ = tx_status
                     .send(status::Status {
-                        state: status::State::BridgeShutdown(e),
+                        state: status::State::BridgeShutdown(crate::error::Error::Bridge(e)),
                     })
                     .await;
             }
@@ -276,16 +273,16 @@ impl Bridge {
         channel_id: u32,
         sv1_submit: Submit,
         version_rolling_mask: Option<HexU32Be>,
-    ) -> ProxyResult<'static, SubmitSharesExtended<'static>> {
+    ) -> TProxyBridgeResult<'static, SubmitSharesExtended<'static>> {
         let last_version = self
             .channel_factory
             .last_valid_job_version()
-            .ok_or(Error::RolesSv2Logic(RolesLogicError::NoValidJob))?;
+            .ok_or(TProxyBridgeError::RolesSv2Logic(RolesLogicError::NoValidJob))?;
         let version = match (sv1_submit.version_bits, version_rolling_mask) {
             // regarding version masking see https://github.com/slushpool/stratumprotocol/blob/master/stratum-extensions.mediawiki#changes-in-request-miningsubmit
             (Some(vb), Some(mask)) => (last_version & !mask.0) | (vb.0 & mask.0),
             (None, None) => last_version,
-            _ => return Err(Error::V1Protocol(v1::error::Error::InvalidSubmission)),
+            _ => return Err(TProxyBridgeError::V1Protocol(v1::error::Error::InvalidSubmission)),
         };
         let mining_device_extranonce: Vec<u8> = sv1_submit.extra_nonce2.into();
         let extranonce2 = mining_device_extranonce;
@@ -305,7 +302,7 @@ impl Bridge {
         self_: Arc<Mutex<Self>>,
         sv2_set_new_prev_hash: SetNewPrevHash<'static>,
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
-    ) -> Result<(), Error<'static>> {
+    ) -> TProxyBridgeResult<'static, ()> {
         while !crate::upstream_sv2::upstream::IS_NEW_JOB_HANDLED
             .load(std::sync::atomic::Ordering::SeqCst)
         {
@@ -313,14 +310,14 @@ impl Bridge {
         }
         self_
             .safe_lock(|s| s.last_p_hash = Some(sv2_set_new_prev_hash.clone()))
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
 
         let on_new_prev_hash_res = self_
             .safe_lock(|s| {
                 s.channel_factory
                     .on_new_prev_hash(sv2_set_new_prev_hash.clone())
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
         on_new_prev_hash_res?;
 
         let mut future_jobs = self_
@@ -329,7 +326,7 @@ impl Bridge {
                 s.future_jobs = vec![];
                 future_jobs
             })
-            .map_err(|_| PoisonLock)?;
+            .map_err(|_| TProxyBridgeError::PoisonLock)?;
 
         let mut match_a_future_job = false;
         while let Some(job) = future_jobs.pop() {
@@ -350,7 +347,7 @@ impl Bridge {
                         s.last_notify = Some(notify);
                         s.last_job_id = j_id;
                     })
-                    .map_err(|_| PoisonLock)?;
+                    .map_err(|_| TProxyBridgeError::PoisonLock)?;
                 break;
             }
         }
@@ -403,31 +400,31 @@ impl Bridge {
         self_: Arc<Mutex<Self>>,
         sv2_new_extended_mining_job: NewExtendedMiningJob<'static>,
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
-    ) -> Result<(), Error<'static>> {
+    ) -> TProxyBridgeResult<'static, ()> {
         // convert to non segwit jobs so we dont have to depend if miner's support segwit or not
         self_
             .safe_lock(|s| {
                 s.channel_factory
                     .on_new_extended_mining_job(sv2_new_extended_mining_job.as_static().clone())
             })
-            .map_err(|_| PoisonLock)??;
+            .map_err(|_| TProxyBridgeError::PoisonLock)??;
 
         // If future_job=true, this job is meant for a future SetNewPrevHash that the proxy
         // has yet to receive. Insert this new job into the job_mapper .
         if sv2_new_extended_mining_job.is_future() {
             self_
                 .safe_lock(|s| s.future_jobs.push(sv2_new_extended_mining_job.clone()))
-                .map_err(|_| PoisonLock)?;
-            Ok(())
+                .map_err(|_| TProxyBridgeError::PoisonLock)?;
+            Ok::<(), TProxyBridgeError>(())
 
         // If future_job=false, this job is meant for the current SetNewPrevHash.
         } else {
             let last_p_hash_option = self_
                 .safe_lock(|s| s.last_p_hash.clone())
-                .map_err(|_| PoisonLock)?;
+                .map_err(|_| TProxyBridgeError::PoisonLock)?;
 
             // last_p_hash is an Option<SetNewPrevHash> so we need to map to the correct error type to be handled
-            let last_p_hash = last_p_hash_option.ok_or(Error::RolesSv2Logic(
+            let last_p_hash = last_p_hash_option.ok_or(TProxyBridgeError::RolesSv2Logic(
                 RolesLogicError::JobIsNotFutureButPrevHashNotPresent,
             ))?;
 
@@ -446,7 +443,7 @@ impl Bridge {
                     s.last_notify = Some(notify);
                     s.last_job_id = j_id;
                 })
-                .map_err(|_| PoisonLock)?;
+                .map_err(|_| TProxyBridgeError::PoisonLock)?;
             Ok(())
         }
     }
