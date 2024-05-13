@@ -22,7 +22,7 @@ use super::super::{
 };
 use error_handling::handle_result;
 use roles_logic_sv2::{channel_logic::channel_factory::OnNewShare, Error as RolesLogicError};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Bridge between the SV2 `Upstream` and SV1 `Downstream` responsible for the following messaging
 /// translation:
@@ -234,8 +234,9 @@ impl Bridge {
             .map_err(|_| PoisonLock);
 
         match res {
-            Ok(Ok(OnNewShare::SendErrorDownstream(e))) => {
-                error!(
+            Ok(Ok(OnNewShare::SendErrorDownstream(_))) => unreachable!(),
+            Ok(Ok(OnNewShare::InvalidShare(e))) => {
+                warn!(
                     "Submit share error {:?}",
                     std::str::from_utf8(&e.error_code.to_vec()[..])
                 );

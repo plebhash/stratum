@@ -70,6 +70,8 @@ pub enum OnNewShare {
     /// Indicate that the share meet downstream target, in the case we could send a success
     /// response dowmstream.
     ShareMeetDownstreamTarget,
+    /// Indicate that an invalid share was received
+    InvalidShare(SubmitSharesError<'static>),
 }
 
 impl OnNewShare {
@@ -114,6 +116,7 @@ impl OnNewShare {
                 }
             },
             OnNewShare::ShareMeetDownstreamTarget => todo!(),
+            OnNewShare::InvalidShare(_) => (),
         }
     }
 }
@@ -1506,7 +1509,7 @@ impl ProxyExtendedChannelFactory {
                     .try_into()
                     .unwrap(),
             };
-            return Ok(OnNewShare::SendErrorDownstream(error));
+            return Ok(OnNewShare::InvalidShare(error));
         }
 
         if let Some(job_creator) = self.job_creator.as_mut() {
