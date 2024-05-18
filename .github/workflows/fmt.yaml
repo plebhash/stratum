@@ -8,7 +8,7 @@ on:
       - main
       - dev
 
-name: Rustfmt
+name: Rustfmt + Taplo
 
 jobs:
   fmt:
@@ -32,6 +32,10 @@ jobs:
           toolchain: nightly
           override: true
           components: rustfmt
+
+      - name: Install Taplo
+        run: cargo install taplo-cli
+
       - name: Run fmt in different workspaces and crates
         run: |
           cargo fmt --all --manifest-path=benches/Cargo.toml -- --check
@@ -40,3 +44,26 @@ jobs:
           cargo fmt --all --manifest-path=roles/Cargo.toml -- --check
           cargo fmt --all --manifest-path=utils/Cargo.toml -- --check
           cargo fmt --all --manifest-path=utils/message-generator/Cargo.toml -- --check
+
+      - name: Notify PR author if rustfmt fails
+        if: failure()
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ⚠️ The Rust files in this PR are not properly formatted. Please run `cargo +nightly fmt` to format the files and push the changes.
+
+      - name: Run Taplo check
+        id: taplo-check
+        run: taplo fmt --check
+        continue-on-error: true
+
+      - name: Notify PR author if Taplo formatting fails
+        if: failure()
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ⚠️ The `Cargo.toml` file(s) in this PR are not properly formatted. Please run `taplo fmt` to format the files and push the changes.
