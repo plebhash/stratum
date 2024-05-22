@@ -64,6 +64,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 impl From<binary_sv2::Error> for Error {
     fn from(e: binary_sv2::Error) -> Self {
         Error::BinarySv2Error(e)
