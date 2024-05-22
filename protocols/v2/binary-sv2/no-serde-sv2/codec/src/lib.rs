@@ -100,6 +100,41 @@ pub enum Error {
     Sv2OptionHaveMoreThenOneElement(u8),
 }
 
+impl std::error::Error for Error {}
+
+use std::fmt;
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::OutOfBound => write!(f, "Index out of bounds"),
+            Error::NotABool(value) => write!(f, "Expected a boolean, but got: {}", value),
+            Error::WriteError(expected, actual) => write!(f, "Write error: expected size {}, but got {}", expected, actual),
+            Error::U24TooBig(value) => write!(f, "Value {} is too big for a 24-bit integer", value),
+            Error::InvalidSignatureSize(size) => write!(f, "Invalid signature size: {}", size),
+            Error::InvalidU256(size) => write!(f, "Invalid U256 size: {}", size),
+            Error::InvalidU24(value) => write!(f, "Invalid U24 value: {}", value),
+            Error::InvalidB0255Size(size) => write!(f, "Invalid B0255 size: {}", size),
+            Error::InvalidB064KSize(size) => write!(f, "Invalid B064K size: {}", size),
+            Error::InvalidB016MSize(size) => write!(f, "Invalid B016M size: {}", size),
+            Error::InvalidSeq0255Size(size) => write!(f, "Invalid Seq0255 size: {}", size),
+            Error::NonPrimitiveTypeCannotBeEncoded => write!(f, "Non-primitive type cannot be encoded"),
+            Error::PrimitiveConversionError => write!(f, "Error converting to/from a primitive type"),
+            Error::DecodableConversionError => write!(f, "Error converting to/from a decodable type"),
+            Error::UnInitializedDecoder => write!(f, "Decoder has not been initialized"),
+            Error::IoError => write!(f, "I/O error occurred"),
+            Error::ReadError(expected, actual) => write!(f, "Read error: expected size {}, but read {}", expected, actual),
+            Error::VoidFieldMarker => write!(f, "Void field marker encountered"),
+            Error::ValueExceedsMaxSize(is_fixed, size, header_size, max_size, _, length) => write!(f, "Value exceeds maximum size (fixed: {}, size: {}, header size: {}, max size: {}, length: {})", is_fixed, size, header_size, max_size, length),
+            Error::SeqExceedsMaxSize => write!(f, "Sequence value exceeds maximum size"),
+            Error::NoDecodableFieldPassed => write!(f, "No decodable field passed"),
+            Error::ValueIsNotAValidProtocol(value) => write!(f, "Value is not a valid protocol identifier: {}", value),
+            Error::UnknownMessageType(type_id) => write!(f, "Unknown message type with identifier: {}", type_id),
+            Error::Sv2OptionHaveMoreThenOneElement(count) => write!(f, "Option contains more than one element: {}", count),
+        }
+    }
+}
+
 #[cfg(not(feature = "no_std"))]
 impl From<E> for Error {
     fn from(v: E) -> Self {
