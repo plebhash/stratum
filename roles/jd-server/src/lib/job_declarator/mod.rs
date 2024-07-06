@@ -3,12 +3,15 @@ use super::{error::JdsError, mempool::JDsMempool, status, Configuration, EitherF
 use async_channel::{Receiver, Sender};
 use binary_sv2::{B0255, U256};
 use codec_sv2::{HandshakeRole, Responder};
+use core::panic;
 use error_handling::handle_result;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey, SignatureService};
 use network_helpers_sv2::noise_connection_tokio::Connection;
 use nohash_hasher::BuildNoHashHasher;
 use roles_logic_sv2::{
-    common_messages_sv2::SetupConnectionSuccess,
+    common_messages_sv2::{
+        Protocol, SetupConnection, SetupConnectionError, SetupConnectionSuccess,
+    },
     handlers::job_declaration::{ParseClientJobDeclarationMessages, SendTo},
     job_declaration_sv2::{DeclareMiningJob, SubmitSolutionJd},
     parsers::{JobDeclaration, PoolMessages as JdsMessages},
@@ -450,24 +453,61 @@ impl JobDeclarator {
             if let Ok((receiver, sender, _, _)) =
                 Connection::new(stream, HandshakeRole::Responder(responder)).await
             {
-                let setup_message_from_proxy_jd = receiver.recv().await.unwrap();
-                info!(
-                    "Setup connection message from proxy: {:?}",
-                    setup_message_from_proxy_jd
-                );
-
-                let setup_connection_success_to_proxy = SetupConnectionSuccess {
-                    used_version: 2,
-                    // Setup flags for async_mining_allowed
-                    flags: 0b_0000_0000_0000_0000_0000_0000_0000_0001,
+                let address = addr.unwrap();
+                let mut incoming = match receiver.recv().await {
+                    Ok(EitherFrame::Sv2(s)) => {
+                        debug!("Got sv2 message: {:?}", s);
+                        s
+                    }
+                    Ok(EitherFrame::HandShake(s)) => {
+                        error!(
+                            "Got unexpected handshake message from upstream: {:?} at {}",
+                            s, address
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Error receiving message: {:?}", e);
+                        continue;
+                    }
                 };
-                let sv2_frame: StdFrame =
-                    JdsMessages::Common(setup_connection_success_to_proxy.into())
+
+                let payload = incoming.payload();
+                let flag = payload[5] as u32;
+
+                let is_valid =
+                    SetupConnection::check_flags(Protocol::JobDeclarationProtocol, flag, 1);
+
+                let sv2_frame: StdFrame = if is_valid {
+                    let success_message = SetupConnectionSuccess {
+                        used_version: 2,
+                        flags: 0b_0000_0000_0000_0000_0000_0000_0000_0001,
+                    };
+                    info!("Sending success message for proxy");
+                    JdsMessages::Common(success_message.into())
                         .try_into()
-                        .unwrap();
+                        .unwrap()
+                } else {
+                    let error_message = SetupConnectionError {
+                        flags: flag,
+                        error_code: "unsupported-feature-flags"
+                            .to_string()
+                            .into_bytes()
+                            .try_into()
+                            .unwrap(),
+                    };
+                    info!("Sending error message for proxy");
+                    JdsMessages::Common(error_message.into())
+                        .try_into()
+                        .unwrap()
+                };
+
                 let sv2_frame = sv2_frame.into();
-                info!("Sending success message for proxy");
                 sender.send(sv2_frame).await.unwrap();
+
+                if !is_valid {
+                    continue;
+                }
 
                 let jddownstream = Arc::new(Mutex::new(JobDeclaratorDownstream::new(
                     receiver.clone(),
