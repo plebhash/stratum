@@ -62,8 +62,6 @@
         {
             "command": "cargo",
             "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p",
                         "pool_sv2",
@@ -96,32 +94,6 @@
             "command": "pkill",
             "args":  ["-f", "pool_sv2", "-SIGINT"],
             "conditions": "None"
-        },
-        {
-            "command": "cargo",
-            "args": [
-                    "llvm-cov",
-                    "--ignore-filename-regex",
-                    "utils/|experimental/|protocols/",
-                    "--cobertura",
-                    "--output-path",
-                    "target/pool-sri-test-reject-auth.xml",
-                    "report"
-            ],
-            "conditions": {
-                "WithConditions": {
-                    "conditions": [
-                        {
-                            "output_string": "Finished report saved to ",
-                            "output_location": "StdErr",
-                            "late_condition": false,
-                            "condition": true
-                        }
-                    ],
-                    "timer_secs": 320,
-                    "warn_no_panic": false
-                }
-            }
         }
     ],
     "role": "client",

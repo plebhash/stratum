@@ -2,11 +2,11 @@
     "version": "2",
     "doc": [
         "What this test does:",
-        "1) launch SRI pool with llvm-cov (Fails with bad coinbase config)",
-        "2) launch SRI pool with llvm-cov and -h flag (Displays `help` options)",
-        "3) launch SRI pool with llvm-cov (Fails because of invalid config)",
-        "4) launch SRI pool with llvm-cov (Fails because of no config file at path)",
-        "5) launch SRI pool with llvm-cov (Successfully runs pool)"
+        "1) launch SRI pool (Fails with bad coinbase config)",
+        "2) launch SRI pool (Displays `help` options)",
+        "3) launch SRI pool (Fails because of invalid config)",
+        "4) launch SRI pool (Fails because of no config file at path)",
+        "5) launch SRI pool (Successfully runs pool)"
     ],
     "common_messages": [
     ],
@@ -39,8 +39,7 @@
         },
         {
             "command": "cargo",
-            "args": [   "llvm-cov",
-                        "--no-report",
+            "args": [
                         "run",
                         "-p",
                         "pool_sv2",
@@ -65,8 +64,7 @@
         },
         {
             "command": "cargo",
-            "args": [   "llvm-cov",
-                        "--no-report",
+            "args": [
                         "run",
                         "-p",
                         "pool_sv2",
@@ -92,8 +90,7 @@
         },
         {
             "command": "cargo",
-            "args": [   "llvm-cov",
-                        "--no-report",
+            "args": [
                         "run",
                         "-p",
                         "pool_sv2",
@@ -118,8 +115,7 @@
         },
         {
             "command": "cargo",
-            "args": [   "llvm-cov",
-                        "--no-report",
+            "args": [
                         "run",
                         "-p",
                         "pool_sv2",
@@ -144,8 +140,7 @@
         },
         {
             "command": "cargo",
-            "args": [   "llvm-cov",
-                        "--no-report",
+            "args": [
                         "run",
                         "-p",
                         "pool_sv2",

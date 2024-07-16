@@ -1,5 +1,5 @@
 cd roles
-cargo llvm-cov --no-report -p jd_server
+cargo build -p jd_server
 
 cd ../utils/message-generator/
 cargo build

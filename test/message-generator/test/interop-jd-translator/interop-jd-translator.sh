@@ -1,8 +1,8 @@
 cd roles
-cargo llvm-cov --no-report -p pool_sv2
-cargo llvm-cov --no-report -p jd_server
-cargo llvm-cov --no-report -p jd_client
-cargo llvm-cov --no-report -p translator_sv2
+cargo build -p pool_sv2
+cargo build -p jd_server
+cargo build -p jd_client
+cargo build -p translator_sv2
 cargo build -p sv1-mining-device
 
 cd ../utils/message-generator/

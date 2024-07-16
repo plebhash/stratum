@@ -1,5 +1,5 @@
 cd roles
-cargo llvm-cov --no-report -p pool_sv2
+cargo build -p pool_sv2
 
 cd ../utils/message-generator/
 cargo build

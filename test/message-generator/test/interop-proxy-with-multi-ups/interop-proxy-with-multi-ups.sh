@@ -1,6 +1,6 @@
 cd roles
-cargo llvm-cov --no-report -p pool_sv2
-cargo llvm-cov --no-report -p mining_proxy_sv2
+cargo build -p pool_sv2
+cargo build -p mining_proxy_sv2
 cargo build -p mining-device
 
 cd ../utils/message-generator/

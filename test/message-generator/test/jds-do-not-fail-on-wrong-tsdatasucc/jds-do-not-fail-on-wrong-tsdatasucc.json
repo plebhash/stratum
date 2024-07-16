@@ -14,8 +14,6 @@
         {
             "command": "cargo",
             "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p",
                         "jd_server",

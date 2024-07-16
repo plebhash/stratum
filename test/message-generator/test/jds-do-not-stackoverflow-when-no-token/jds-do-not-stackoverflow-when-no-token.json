@@ -39,8 +39,6 @@
         {
             "command": "cargo",
             "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p",
                         "pool_sv2",
@@ -66,8 +64,6 @@
         {
             "command": "cargo",
             "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p",
                         "jd_client",
@@ -99,8 +95,6 @@
         {
             "command": "cargo",
             "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p",
                         "mining_proxy_sv2",

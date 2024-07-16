@@ -109,8 +109,6 @@
         {
              "command": "cargo",
              "args": [
-                        "llvm-cov",
-                        "--no-report",
                         "run",
                         "-p", 
                         "pool_sv2",
