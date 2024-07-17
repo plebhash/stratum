@@ -2,7 +2,7 @@
     "version": "2",
     "doc": [
         "This test does",
-        "Soft mock of JD",
+        "Soft mock of JDC",
         "Connect to JDS",
         "Receive Setup Connection Error as incorrect bits are set"
     ],
