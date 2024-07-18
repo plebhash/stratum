@@ -1,4 +1,6 @@
-use crate::{Action, ActionResult, Role, SaveField, Sv1Action, Sv1ActionResult, Sv2Type};
+use crate::{
+    Action, ActionResult, Condition, Role, SaveField, Sv1Action, Sv1ActionResult, Sv2Type,
+};
 use codec_sv2::{buffer_sv2::Slice, StandardEitherFrame, Sv2Frame};
 use roles_logic_sv2::parsers::AnyMessage;
 use serde_json::{Map, Value};
@@ -52,7 +54,23 @@ impl Sv2ActionParser {
                 match result.get("type").unwrap().as_str().unwrap() {
                     "match_message_type" => {
                         let message_type = u8::from_str_radix(&result.get("value").unwrap().as_str().unwrap()[2..], 16).expect("Result message_type should be an hex value starting with 0x and not bigger than 0xff");
-                        action_results.push(ActionResult::MatchMessageType(message_type));
+                        match result.get("condition") {
+                            Some(condition_inner) => {
+                                let condition_ =
+                                    serde_json::from_value::<Condition>(condition_inner.clone())
+                                        .unwrap();
+                                match condition_ {
+                                    Condition::WaitUntil => {
+                                        action_results.push(ActionResult::MatchMessageType(
+                                            message_type,
+                                            Some(Condition::WaitUntil),
+                                        ))
+                                    }
+                                }
+                            }
+                            None => action_results
+                                .push(ActionResult::MatchMessageType(message_type, None)),
+                        };
                     }
                     "get_message_field" => {
                         let sv2_type = result.get("value").unwrap().clone();

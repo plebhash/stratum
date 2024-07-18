@@ -3,7 +3,7 @@ use crate::{
     into_static::into_static,
     net::{setup_as_downstream, setup_as_upstream},
     parser::sv2_messages::ReplaceField,
-    Action, ActionResult, Command, Role, SaveField, Sv2Type, Test,
+    Action, ActionResult, Command, Condition, Role, SaveField, Sv2Type, Test,
 };
 use async_channel::{Receiver, Sender};
 use binary_sv2::Serialize;
@@ -200,30 +200,65 @@ impl Executor {
                 );
 
                 match result {
-                    ActionResult::MatchMessageType(message_type) => {
-                        let message = match recv.recv().await {
-                            Ok(message) => message,
-                            Err(_) => {
-                                success = false;
-                                error!("Connection closed before receiving the message");
-                                break;
+                    ActionResult::MatchMessageType(message_type, condition) => {
+                        match condition {
+                            None => {
+                                let message = match recv.recv().await {
+                                    Ok(message) => message,
+                                    Err(_) => {
+                                        success = false;
+                                        error!("Connection closed before receiving the message");
+                                        break;
+                                    }
+                                };
+
+                                let message: Sv2Frame<AnyMessage<'static>, _> =
+                                    message.try_into().unwrap();
+                                debug!("RECV {:#?}", message);
+                                let header = message.get_header().unwrap();
+
+                                if header.msg_type() != *message_type {
+                                    error!(
+                                        "WRONG MESSAGE TYPE expected: {} received: {}",
+                                        message_type,
+                                        header.msg_type()
+                                    );
+                                    success = false;
+                                    break;
+                                } else {
+                                    info!("MATCHED MESSAGE TYPE {}", message_type);
+                                }
                             }
-                        };
+                            Some(condition_inner) => {
+                                match condition_inner {
+                                    Condition::WaitUntil => loop {
+                                        let message = match recv.recv().await {
+                                            Ok(message) => message,
+                                            Err(_) => {
+                                                success = false;
+                                                error!("Connection closed before receiving the message");
+                                                break;
+                                            }
+                                        };
 
-                        let message: Sv2Frame<AnyMessage<'static>, _> = message.try_into().unwrap();
-                        debug!("RECV {:#?}", message);
-                        let header = message.get_header().unwrap();
-
-                        if header.msg_type() != *message_type {
-                            error!(
-                                "WRONG MESSAGE TYPE expected: {} received: {}",
-                                message_type,
-                                header.msg_type()
-                            );
-                            success = false;
-                            break;
-                        } else {
-                            info!("MATCHED MESSAGE TYPE {}", message_type);
+                                        let message: Sv2Frame<AnyMessage<'static>, _> =
+                                            message.try_into().unwrap();
+                                        debug!("RECV {:#?}", message);
+                                        let header = message.get_header().unwrap();
+                                        if header.msg_type() != *message_type {
+                                            info!(
+                                                "RECEIVED {}, WAITING MESSAGE TYPE {}",
+                                                header.msg_type(),
+                                                message_type
+                                            );
+                                            continue;
+                                        } else {
+                                            info!("MATCHED WAITED  MESSAGE TYPE {}", message_type);
+                                            break;
+                                        }
+                                    },
+                                };
+                            }
                         }
                     }
                     ActionResult::MatchMessageField((

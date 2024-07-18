@@ -11,6 +11,7 @@ extern crate load_file;
 use crate::parser::sv2_messages::ReplaceField;
 use binary_sv2::{Deserialize, Serialize};
 use codec_sv2::StandardEitherFrame as EitherFrame;
+use core::fmt::Display;
 use external_commands::*;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use rand::Rng;
@@ -180,8 +181,21 @@ pub struct SaveField {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub enum Condition {
+    WaitUntil,
+}
+
+impl Display for Condition {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Condition::WaitUntil => write!(f, "WaitUntil"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 enum ActionResult {
-    MatchMessageType(u8),
+    MatchMessageType(u8, Option<Condition>),
     MatchMessageField((String, String, Vec<(String, Sv2Type)>)),
     GetMessageField {
         subprotocol: String,
@@ -209,13 +223,22 @@ enum Sv1ActionResult {
 impl std::fmt::Display for ActionResult {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            ActionResult::MatchMessageType(message_type) => {
-                write!(
-                    f,
-                    "MatchMessageType: {} ({:#x})",
-                    message_type, message_type
-                )
-            }
+            ActionResult::MatchMessageType(message_type, condition) => match condition {
+                None => {
+                    write!(
+                        f,
+                        "MatchMessageType: {} ({:#x})",
+                        message_type, message_type
+                    )
+                }
+                Some(condition_inner) => {
+                    write!(
+                        f,
+                        "MatchMessageType: {} ({:#x}) with condition {}",
+                        message_type, message_type, condition_inner
+                    )
+                }
+            },
             ActionResult::MatchMessageField(message_field) => {
                 write!(f, "MatchMessageField: {:?}", message_field)
             }
