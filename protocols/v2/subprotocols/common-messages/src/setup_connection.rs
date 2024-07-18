@@ -91,7 +91,10 @@ impl<'decoder> SetupConnection<'decoder> {
                 let requires_async_job_mining_passed = (required >> 31) & 1 > 0;
                 let requires_async_job_mining_self = (available >> 31) & 1 > 0;
 
-                match (requires_async_job_mining_self, requires_async_job_mining_passed) {
+                match (
+                    requires_async_job_mining_self,
+                    requires_async_job_mining_passed,
+                ) {
                     (true, true) => true,
                     (true, false) => true,
                     (false, true) => false,
