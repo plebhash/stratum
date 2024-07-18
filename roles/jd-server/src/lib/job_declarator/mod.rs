@@ -481,37 +481,18 @@ impl JobDeclarator {
                                 1,
                             );
 
-                            let sv2_frame: StdFrame = if is_valid {
+                            if is_valid {
                                 let success_message = SetupConnectionSuccess {
                                     used_version: 2,
                                     flags: 0b_0000_0000_0000_0000_0000_0000_0000_0001,
                                 };
                                 info!("Sending success message for proxy");
-                                JdsMessages::Common(success_message.into())
-                                    .try_into()
-                                    .expect(
-                                        "Failed to convert setup connection response message to standard frame"
-                                    )
-                            } else {
-                                let error_message = SetupConnectionError {
-                                    flags: flag,
-                                    error_code: "unsupported-feature-flags"
-                                        .to_string()
-                                        .into_bytes()
-                                        .try_into()
-                                        .unwrap(),
-                                };
-                                info!("Sending error message for proxy");
-                                JdsMessages::Common(error_message.into())
-                                    .try_into()
-                                    .expect(
-                                        "Failed to convert setup connection response message to standard frame"
-                                    )
-                            };
+                                let sv2_frame: StdFrame = JdsMessages::Common(success_message.into())
+        .try_into()
+        .expect("Failed to convert setup connection response message to standard frame");
 
-                            sender.send(sv2_frame.into()).await.unwrap();
+                                sender.send(sv2_frame.into()).await.unwrap();
 
-                            if is_valid {
                                 let jddownstream =
                                     Arc::new(Mutex::new(JobDeclaratorDownstream::new(
                                         receiver.clone(),
@@ -526,6 +507,21 @@ impl JobDeclarator {
                                     status_tx.clone(),
                                     new_block_sender.clone(),
                                 );
+                            } else {
+                                let error_message = SetupConnectionError {
+                                    flags: flag,
+                                    error_code: "unsupported-feature-flags"
+                                        .to_string()
+                                        .into_bytes()
+                                        .try_into()
+                                        .unwrap(),
+                                };
+                                info!("Sending error message for proxy");
+                                let sv2_frame: StdFrame = JdsMessages::Common(error_message.into())
+        .try_into()
+        .expect("Failed to convert setup connection response message to standard frame");
+
+                                sender.send(sv2_frame.into()).await.unwrap();
                             }
                         } else {
                             error!("Error parsing SetupConnection message");
