@@ -229,8 +229,13 @@ message will be the abbreviated with `setup_connection_success_template_distribu
 2. `messages_ids`: an array of strings, that are ids of messages previously defined.
 3. `results`: is an array of objects, used by the message generator to test if certain property of
    the received frames are true or not.  Accepts values:
-    - "type": String - match option - match_message_type, match_message_field, match_message_len, or match_extension_type
-    - "value": Array - varries depending on "type"
+    - `type`: `String` - match option - `match_message_type`, `match_message_field`, `match_message_len`, or `match_extension_type`
+    - `value`: `Array` - varies depending on `type`
+
+A `results` that carries a `"type": "match_message_type"` can optionally include a `condition` parameter, where currently the only option is `WaitUntil`.
+
+If the `WaitUntil` is used as a `condition` for a `match_message_type`, then the test will not necessarily fail if a different message is received.
+All received messages are ignored until the expected message arrives. For this reason, it's important to make sure the test's `command` has `WithConditions` with a `timer_secs` parameter in order to avoid the test being stuck on an infinite loop.
 
 ```json
 {
@@ -248,7 +253,8 @@ message will be the abbreviated with `setup_connection_success_template_distribu
                             "request_id",
                             {"U32": 89}
                         ]
-                    ]
+                    ],
+                   "condition": "WaitUntil"
                 }
             ] 
         }
