@@ -138,6 +138,10 @@ async fn main() {
             }
             State::UpstreamShutdown(err) => {
                 error!("SHUTDOWN from: {}", err);
+                break;
+            }
+            State::UpstreamTryReconnect(err) => {
+                error!("SHUTDOWN from: {}", err);
 
                 // wait a random amount of time between 0 and 3000ms
                 // if all the downstreams try to reconnect at the same time, the upstream may fail
