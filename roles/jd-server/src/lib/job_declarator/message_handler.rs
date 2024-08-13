@@ -67,12 +67,18 @@ pub fn clear_declared_mining_job(
             match transaction_with_hash {
                 Some(transaction_with_hash) => {
                     let txid = transaction_with_hash.id;
-                    match mempool_.mempool.remove(&txid) {
-                        Some(transaction) => {
-                            debug!("Fat transaction {:?} in job with request id {:?} removed from mempool", transaction, mining_job.request_id);
-                            info!("Fat transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id);
+                    match mempool_.mempool.get(&txid) {
+                        Some(Some((transaction, counter))) => {
+                            if *counter > 1 {
+                                mempool_.mempool.insert(txid, Some((transaction.clone(), counter - 1)));
+                                info!("Fat transaction {:?} decreased mempool counter because job id {:?} was dropped", txid, mining_job.request_id);
+                            } else {
+                                mempool_.mempool.remove(&txid);
+                                info!("Fat transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id);
+                            }
                         },
-                        None => info!("Thin transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id),
+                        Some(None) => info!("Thin transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id),
+                        None => {},
                     }
                 },
                 None => debug!("Transaction with short id {:?} not found in mempool while clearing old jobs", short_id),
