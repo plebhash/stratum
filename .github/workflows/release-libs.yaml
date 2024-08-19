@@ -11,10 +11,11 @@
 name: Release Libs
 
 on:
-  pull_request:
+  workflow_run:
+    workflows: ["Semver Check"]
+    types: [completed]
     branches:
       - main
-
 jobs:
   libs_publish:
     runs-on: ubuntu-latest
