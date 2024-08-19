@@ -11,9 +11,7 @@
 name: Release Libs
 
 on:
-  workflow_run:
-    workflows: ["Semver Check"]
-    types: [completed]
+  push:
     branches:
       - main
 jobs:
