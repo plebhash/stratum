@@ -147,10 +147,14 @@
             "results": [
                 {
                     "type": "match_message_type",
+                    "value": "0x16"
+                },
+                {
+                    "type": "match_message_type",
                     "value": "0x1b"
                 }
             ],
-            "actiondoc": "Sends NewExtendedMiningJob and SetNewPrevHash and waits that a SubmitsShareExtended is submitted" 
+            "actiondoc": "Sends NewExtendedMiningJob and SetNewPrevHash and waits that a UpdateChannel, then a SubmitSharesExtended is submitted"
         }
     ],
     "setup_commands": [
