@@ -22,9 +22,10 @@ impl Upstream {
                 )
             })
             .map_err(|_e| PoisonLock)?;
-        let channel_id = channel_id_option.ok_or(super::super::error::Error::RolesSv2Logic(
-            RolesLogicError::NotFoundChannelId,
-        ))?;
+        let channel_id = match channel_id_option {
+            Some(id) => id,
+            None => return Ok(())
+        };
         let (timeout, new_hashrate) = diff_mgmt
             .safe_lock(|d| (d.channel_diff_update_interval, d.channel_nominal_hashrate))
             .map_err(|_e| PoisonLock)?;

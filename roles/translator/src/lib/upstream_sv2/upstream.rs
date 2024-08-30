@@ -290,8 +290,6 @@ impl Upstream {
             let self_ = self_.clone();
             let tx_status = tx_status.clone();
             let start_diff_management = tokio::task::spawn(async move {
-                // No need to start diff management immediatly
-                sleep(Duration::from_secs(10)).await;
                 loop {
                     handle_result!(tx_status, Self::try_update_hashrate(self_.clone()).await);
                 }
