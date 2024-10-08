@@ -193,12 +193,12 @@ pub struct Device {
     notify_changes_to_mining_thread: NewWorkNotifier,
 }
 
-fn open_channel(device_id: Option<String>) -> OpenStandardMiningChannel<'static> {
+fn open_channel(device_id: Option<String>, handicap: u32) -> OpenStandardMiningChannel<'static> {
     let user_identity = device_id.unwrap_or_default().try_into().unwrap();
     let id: u32 = 10;
     info!("Measuring CPU hashrate");
     let p = std::thread::available_parallelism().unwrap().get() as u32 - 3;
-    let nominal_hash_rate = measure_hashrate(5) as f32 * p as f32;
+    let nominal_hash_rate = measure_hashrate(5, handicap) as f32 * p as f32;
     info!("Pc hashrate is {}", nominal_hash_rate);
     info!("MINING DEVICE: send open channel with request id {}", id);
     OpenStandardMiningChannel {
@@ -245,7 +245,7 @@ impl Device {
             },
         };
         let open_channel =
-            MiningDeviceMessages::Mining(Mining::OpenStandardMiningChannel(open_channel(user_id)));
+            MiningDeviceMessages::Mining(Mining::OpenStandardMiningChannel(open_channel(user_id, handicap)));
         let frame: StdFrame = open_channel.try_into().unwrap();
         self_.sender.send(frame.into()).await.unwrap();
         let self_mutex = std::sync::Arc::new(Mutex::new(self_));
@@ -597,7 +597,7 @@ impl NextShareOutcome {
 }
 
 // returns hashrate based on how fast the device hashes over the given duration
-fn measure_hashrate(duration_secs: u64) -> f64 {
+fn measure_hashrate(duration_secs: u64, handicap: u32) -> f64 {
     let mut rng = thread_rng();
     let prev_hash: [u8; 32] = generate_random_32_byte_array().to_vec().try_into().unwrap();
     let prev_hash = Hash::from_inner(prev_hash);
@@ -619,7 +619,7 @@ fn measure_hashrate(duration_secs: u64) -> f64 {
     let start_time = Instant::now();
     let mut hashes: u64 = 0;
     let duration = Duration::from_secs(duration_secs);
-    let mut miner = Miner::new(0);
+    let mut miner = Miner::new(handicap);
     // We put the target to 0 we are only interested in how many hashes per unit of time we can do
     // and do not want to be botherd by messages about valid shares found.
     miner.new_target(vec![0_u8; 32]);
