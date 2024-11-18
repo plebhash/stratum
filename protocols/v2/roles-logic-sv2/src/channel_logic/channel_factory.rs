@@ -1,3 +1,5 @@
+//! Contains logic for creating channels.
+
 use super::extended_to_standard_job;
 use crate::{
     common_properties::StandardChannel,

@@ -1,3 +1,5 @@
+//! Contains logic for managing Standard Channels via Group Channels.
+
 use crate::{common_properties::StandardChannel, parsers::Mining, Error};
 
 use mining_sv2::{
