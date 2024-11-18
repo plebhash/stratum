@@ -50,7 +50,7 @@ pub struct PartialSetCustomMiningJob {
     pub future_job: bool,
 }
 
-/// Represent the action that needs to be done when a new share is received.
+/// Represents the action that needs to be done when a new share is received.
 #[derive(Debug, Clone)]
 pub enum OnNewShare {
     /// Used when the received is malformed, is for an inexistent channel or do not meet downstream
@@ -76,7 +76,7 @@ pub enum OnNewShare {
 }
 
 impl OnNewShare {
-    /// convert standard share into extended share
+    /// Convert standard share into extended share
     pub fn into_extended(&mut self, extranonce: Vec<u8>, up_id: u32) {
         match self {
             OnNewShare::SendErrorDownstream(_) => (),
@@ -121,7 +121,7 @@ impl OnNewShare {
     }
 }
 
-/// A share can be both extended or standard
+/// A share can be either extended or standard
 #[derive(Clone, Debug)]
 pub enum Share {
     Extended(SubmitSharesExtended<'static>),
@@ -129,7 +129,7 @@ pub enum Share {
     Standard((SubmitSharesStandard, u32)),
 }
 
-/// helper type used before a `SetNewPrevHash` has a channel_id
+/// Helper type used before a `SetNewPrevHash` has a channel_id
 #[derive(Clone, Debug)]
 pub struct StagedPhash {
     job_id: u32,
@@ -196,7 +196,7 @@ impl Share {
 }
 
 #[derive(Debug)]
-/// Basic logic shared between all the channel factory.
+/// Basic logic shared between all the channel factories
 struct ChannelFactory {
     ids: Arc<Mutex<GroupId>>,
     standard_channels_for_non_hom_downstreams:
@@ -238,13 +238,14 @@ impl ChannelFactory {
             ),
         }
     }
+
     /// Called when a `OpenExtendedMiningChannel` message is received.
     /// Here we save the downstream's target (based on hashrate) and the
     /// channel's extranonce details before returning the relevant SV2 mining messages
     /// to be sent downstream. For the mining messages, we will first return an
     /// `OpenExtendedMiningChannelSuccess` if the channel is successfully opened. Then we add
     /// the `NewExtendedMiningJob` and `SetNewPrevHash` messages if the relevant data is
-    /// available. If the channel opening fails, we return `OpenExtenedMiningChannelError`.
+    /// available. If the channel opening fails, we return `OpenExtendedMiningChannelError`.
     pub fn new_extended_channel(
         &mut self,
         request_id: u32,
@@ -315,8 +316,9 @@ impl ChannelFactory {
             )])
         }
     }
+
     /// Called when we want to replicate a channel already opened by another actor.
-    /// is used only in the jd client from the template provider module to mock a pool.
+    /// It is used only in the jd client from the template provider module to mock a pool.
     /// Anything else should open channel with the new_extended_channel function
     pub fn replicate_upstream_extended_channel_only_jd(
         &mut self,
@@ -674,6 +676,7 @@ impl ChannelFactory {
         self.last_prev_hash = Some((m, ids));
         Ok(())
     }
+
     /// Called when a `NewExtendedMiningJob` arrives. If the job is future, we add it to the future
     /// queue. If the job is not future, we pair it with a the most recent prev hash
     fn on_new_extended_mining_job(
@@ -909,6 +912,7 @@ impl ChannelFactory {
             Ok(OnNewShare::SendErrorDownstream(error))
         }
     }
+
     /// Returns the downstream target and extranonce for the channel
     fn get_channel_specific_mining_info(&self, m: &Share) -> Option<(mining_sv2::Target, Vec<u8>)> {
         match m {
@@ -970,7 +974,7 @@ impl ChannelFactory {
     }
 }
 
-/// Used by a pool to in order to manage all downstream channel. It add job creation capabilities
+/// Used by a pool to in order to manage all downstream channel. It adds job creation capabilities
 /// to ChannelFactory.
 #[derive(Debug)]
 pub struct PoolChannelFactory {
@@ -978,7 +982,7 @@ pub struct PoolChannelFactory {
     job_creator: JobsCreators,
     pool_coinbase_outputs: Vec<TxOut>,
     pool_signature: String,
-    // extedned_channel_id -> SetCustomMiningJob
+    // extended_channel_id -> SetCustomMiningJob
     negotiated_jobs: HashMap<u32, SetCustomMiningJob<'static>, BuildNoHashHasher<u32>>,
 }
 
@@ -1021,6 +1025,7 @@ impl PoolChannelFactory {
             negotiated_jobs: HashMap::with_hasher(BuildNoHashHasher::default()),
         }
     }
+
     /// Calls [`ChannelFactory::add_standard_channel`]
     pub fn add_standard_channel(
         &mut self,
@@ -1032,6 +1037,7 @@ impl PoolChannelFactory {
         self.inner
             .add_standard_channel(request_id, downstream_hash_rate, is_header_only, id)
     }
+
     /// Calls [`ChannelFactory::new_extended_channel`]
     pub fn new_extended_channel(
         &mut self,
@@ -1042,6 +1048,7 @@ impl PoolChannelFactory {
         self.inner
             .new_extended_channel(request_id, hash_rate, min_extranonce_size)
     }
+
     /// Called when we want to replicate a channel already opened by another actor.
     /// is used only in the jd client from the template provider module to mock a pool.
     /// Anything else should open channel with the new_extended_channel function
@@ -1059,6 +1066,7 @@ impl PoolChannelFactory {
             extranonce_size,
         )
     }
+
     /// Called only when a new prev hash is received by a Template Provider. It matches the
     /// message with a `job_id` and calls [`ChannelFactory::on_new_prev_hash`]
     /// it return the job_id
@@ -1076,6 +1084,7 @@ impl PoolChannelFactory {
         self.inner.on_new_prev_hash(new_prev_hash)?;
         Ok(job_id)
     }
+
     /// Called only when a new template is received by a Template Provider
     pub fn on_new_template(
         &mut self,
@@ -1089,6 +1098,7 @@ impl PoolChannelFactory {
         )?;
         self.inner.on_new_extended_mining_job(new_job)
     }
+
     /// Called when a `SubmitSharesStandard` message is received from the downstream. We check the
     /// shares against the channel's respective target and return `OnNewShare` to let us know if
     /// and where the shares should be relayed
@@ -1215,11 +1225,13 @@ impl PoolChannelFactory {
             )
         }
     }
+
     /// Utility function to return a new group id
     pub fn new_group_id(&mut self) -> u32 {
         let new_id = self.inner.ids.safe_lock(|ids| ids.new_group_id()).unwrap();
         new_id
     }
+
     /// Utility function to return a new standard channel id
     pub fn new_standard_id_for_hom(&mut self) -> u32 {
         let hom_group_id = 0;
@@ -1230,6 +1242,7 @@ impl PoolChannelFactory {
             .unwrap();
         new_id
     }
+
     /// Returns the full extranonce, extranonce1 (static for channel) + extranonce2 (miner nonce
     /// space)
     pub fn extranonce_from_downstream_extranonce(
@@ -1240,6 +1253,7 @@ impl PoolChannelFactory {
             .extranonces
             .extranonce_from_downstream_extranonce(ext)
     }
+
     /// Called when a new custom mining job arrives
     pub fn on_new_set_custom_mining_job(
         &mut self,
@@ -1275,8 +1289,8 @@ impl PoolChannelFactory {
         self.pool_coinbase_outputs = outs;
     }
 
-    /// calls [`ChannelFactory::update_target_for_channel`]
-    /// Set a partucular downstream channel target.
+    /// Calls [`ChannelFactory::update_target_for_channel`]
+    /// Set a particular downstream channel target.
     pub fn update_target_for_channel(
         &mut self,
         channel_id: u32,
@@ -1284,7 +1298,8 @@ impl PoolChannelFactory {
     ) -> Option<bool> {
         self.inner.update_target_for_channel(channel_id, new_target)
     }
-    // Set the target for this channel. This is the upstream target.
+
+    /// Set the target for this channel. This is the upstream target.
     pub fn set_target(&mut self, new_target: &mut Target) {
         self.inner.kind.set_target(new_target);
     }
@@ -1355,6 +1370,7 @@ impl ProxyExtendedChannelFactory {
             extended_channel_id,
         }
     }
+
     /// Calls [`ChannelFactory::add_standard_channel`]
     pub fn add_standard_channel(
         &mut self,
@@ -1366,6 +1382,7 @@ impl ProxyExtendedChannelFactory {
         self.inner
             .add_standard_channel(request_id, downstream_hash_rate, id_header_only, id)
     }
+
     /// Calls [`ChannelFactory::new_extended_channel`]
     pub fn new_extended_channel(
         &mut self,
@@ -1376,6 +1393,7 @@ impl ProxyExtendedChannelFactory {
         self.inner
             .new_extended_channel(request_id, hash_rate, min_extranonce_size)
     }
+
     /// Called only when a new prev hash is received by a Template Provider when job declaration is
     /// used. It matches the message with a `job_id`, creates a new custom job, and calls
     /// [`ChannelFactory::on_new_prev_hash`]
@@ -1419,6 +1437,7 @@ impl ProxyExtendedChannelFactory {
             panic!("A channel factory without job creator do not have declaration capabilities")
         }
     }
+
     /// Called only when a new template is received by a Template Provider when job declaration is
     /// used. It creates a new custom job and calls
     /// [`ChannelFactory::on_new_extended_mining_job`]
@@ -1695,6 +1714,7 @@ impl ProxyExtendedChannelFactory {
     pub fn last_valid_job_version(&self) -> Option<u32> {
         self.inner.last_valid_job.as_ref().map(|j| j.0.version)
     }
+
     /// Returns the full extranonce, extranonce1 (static for channel) + extranonce2 (miner nonce
     /// space)
     pub fn extranonce_from_downstream_extranonce(
@@ -1705,6 +1725,7 @@ impl ProxyExtendedChannelFactory {
             .extranonces
             .extranonce_from_downstream_extranonce(ext)
     }
+
     /// Returns the most recent prev hash
     pub fn last_prev_hash(&self) -> Option<binary_sv2::U256<'static>> {
         self.inner
@@ -1712,9 +1733,11 @@ impl ProxyExtendedChannelFactory {
             .as_ref()
             .map(|f| f.0.prev_hash.clone())
     }
+
     pub fn last_min_ntime(&self) -> Option<u32> {
         self.inner.last_prev_hash.as_ref().map(|f| f.0.min_ntime)
     }
+
     pub fn last_nbits(&self) -> Option<u32> {
         self.inner.last_prev_hash.as_ref().map(|f| f.0.nbits)
     }
@@ -1733,6 +1756,7 @@ impl ProxyExtendedChannelFactory {
     pub fn get_this_channel_id(&self) -> u32 {
         self.extended_channel_id
     }
+
     /// returns the extranonce1 len of the upstream. For a proxy, this would
     /// be the extranonce_prefix len
     pub fn get_upstream_extranonce1_len(&self) -> usize {
