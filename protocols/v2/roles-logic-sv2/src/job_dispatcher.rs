@@ -41,6 +41,8 @@ pub fn extended_to_standard_job_for_group_channel<'a>(
         merkle_root: merkle_root?.try_into().ok()?,
     })
 }
+
+// helper struct to easily calculate block hashes from headers
 #[allow(dead_code)]
 struct BlockHeader<'a> {
     version: u32,
@@ -85,6 +87,7 @@ fn target_from_shares(
     header.hash()
 }
 
+// helper struct to identify Standard Jobs being managed for downstream
 #[derive(Debug)]
 struct DownstreamJob {
     merkle_root: Vec<u8>,
@@ -117,6 +120,7 @@ pub struct GroupChannelJobDispatcher {
     nbits: u32,
 }
 
+/// Used to signal if submitted shares correlate to valid jobs
 pub enum SendSharesResponse {
     //ValidAndMeetUpstreamTarget((SubmitSharesStandard,SubmitSharesSuccess)),
     Valid(SubmitSharesStandard),
