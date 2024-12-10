@@ -1,6 +1,6 @@
 mod common;
 
-use std::{convert::TryInto, time::Duration};
+use std::convert::TryInto;
 
 use common::{InterceptMessage, MessageDirection};
 use const_sv2::MESSAGE_TYPE_SETUP_CONNECTION_ERROR;
@@ -8,7 +8,6 @@ use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection, SetupConnectionError},
     parsers::{CommonMessages, Mining, PoolMessages, TemplateDistribution},
 };
-use tokio::time::sleep;
 
 // This test starts a Template Provider and a Pool, and checks if they exchange the correct
 // messages upon connection.
@@ -118,7 +117,14 @@ async fn translation_proxy() {
     let jdc_addr = common::start_jdc(pool_jdc_sniffer_addr, tp_addr, jds_addr).await;
     let mining_proxy_addr = common::start_sv2_translator(jdc_addr).await;
     let _ = common::start_mining_device_sv1(mining_proxy_addr).await;
-    sleep(Duration::from_secs(3)).await;
+
+    // todo: fix the unecessary jdc logic
+    pool_jdc_sniffer
+        .wait_for_message_type(
+            MessageDirection::ToUpstream,
+            const_sv2::MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+        )
+        .await;
 
     assert_common_message!(
         &pool_jdc_sniffer.next_message_from_downstream(),
