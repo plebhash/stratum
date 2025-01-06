@@ -1,6 +1,6 @@
 use integration_tests_sv2::*;
 
-use common::sniffer::MessageDirection;
+use crate::sniffer::MessageDirection;
 use const_sv2::MESSAGE_TYPE_NEW_TEMPLATE;
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection},
