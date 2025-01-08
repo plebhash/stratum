@@ -69,24 +69,27 @@ pub struct Sniffer {
 pub struct InterceptMessage {
     direction: MessageDirection,
     expected_message_type: MsgType,
-    replace_message: PoolMessages<'static>,
-    replace_message_type: MsgType,
+    replace_message: Option<ReplaceMessage>,
     break_on: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplaceMessage {
+    pub message: PoolMessages<'static>,
+    pub message_type: MsgType,
 }
 
 impl InterceptMessage {
     pub fn new(
         direction: MessageDirection,
         expected_message_type: MsgType,
-        replace_message: PoolMessages<'static>,
-        replace_message_type: MsgType,
+        replace_message: Option<ReplaceMessage>,
         break_on: bool,
     ) -> Self {
         Self {
             direction,
             expected_message_type,
             replace_message,
-            replace_message_type,
             break_on,
         }
     }
@@ -232,17 +235,35 @@ impl Sniffer {
                 {
                     let extension_type = 0;
                     let channel_msg = false;
-                    let frame = StandardEitherFrame::<AnyMessage<'_>>::Sv2(
-                        Sv2Frame::from_message(
-                            intercept_message.replace_message.clone(),
-                            intercept_message.replace_message_type,
-                            extension_type,
-                            channel_msg,
-                        )
-                        .expect("Failed to create the frame"),
-                    );
-                    downstream_messages
-                        .add_message(msg_type, intercept_message.replace_message.clone());
+                    let frame = match &intercept_message.replace_message {
+                        Some(replace_message) => {
+                            downstream_messages.add_message(
+                                replace_message.message_type,
+                                replace_message.message.clone(),
+                            );
+                            StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                Sv2Frame::from_message(
+                                    replace_message.message.clone(),
+                                    replace_message.message_type,
+                                    extension_type,
+                                    channel_msg,
+                                )
+                                .expect("Failed to create the frame"),
+                            )
+                        }
+                        None => {
+                            downstream_messages.add_message(msg_type, msg.clone());
+                            StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                Sv2Frame::from_message(
+                                    msg.clone(),
+                                    msg_type,
+                                    extension_type,
+                                    channel_msg,
+                                )
+                                .expect("Failed to create the frame"),
+                            )
+                        }
+                    };
                     let _ = send.send(frame).await;
                     if intercept_message.break_on {
                         return Err(SnifferError::MessageInterrupted);
@@ -274,17 +295,35 @@ impl Sniffer {
                 {
                     let extension_type = 0;
                     let channel_msg = false;
-                    let frame = StandardEitherFrame::<AnyMessage<'_>>::Sv2(
-                        Sv2Frame::from_message(
-                            intercept_message.replace_message.clone(),
-                            intercept_message.replace_message_type,
-                            extension_type,
-                            channel_msg,
-                        )
-                        .expect("Failed to create the frame"),
-                    );
-                    upstream_messages
-                        .add_message(msg_type, intercept_message.replace_message.clone());
+                    let frame = match &intercept_message.replace_message {
+                        Some(replace_message) => {
+                            upstream_messages.add_message(
+                                replace_message.message_type,
+                                replace_message.message.clone(),
+                            );
+                            StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                Sv2Frame::from_message(
+                                    replace_message.message.clone(),
+                                    replace_message.message_type,
+                                    extension_type,
+                                    channel_msg,
+                                )
+                                .expect("Failed to create the frame"),
+                            )
+                        }
+                        None => {
+                            upstream_messages.add_message(msg_type, msg.clone());
+                            StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                Sv2Frame::from_message(
+                                    msg.clone(),
+                                    msg_type,
+                                    extension_type,
+                                    channel_msg,
+                                )
+                                .expect("Failed to create the frame"),
+                            )
+                        }
+                    };
                     let _ = send.send(frame).await;
                     if intercept_message.break_on {
                         return Err(SnifferError::MessageInterrupted);

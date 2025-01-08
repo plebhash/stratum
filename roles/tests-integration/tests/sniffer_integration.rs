@@ -1,5 +1,5 @@
 use const_sv2::MESSAGE_TYPE_SETUP_CONNECTION_ERROR;
-use integration_tests_sv2::*;
+use integration_tests_sv2::{sniffer::ReplaceMessage, *};
 use roles_logic_sv2::{
     common_messages_sv2::SetupConnectionError,
     parsers::{CommonMessages, PoolMessages},
@@ -23,8 +23,10 @@ async fn test_sniffer_interrupter() {
     let interrupt_msgs = InterceptMessage::new(
         MessageDirection::ToDownstream,
         MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
-        message,
-        MESSAGE_TYPE_SETUP_CONNECTION_ERROR,
+        Some(ReplaceMessage {
+            message,
+            message_type: MESSAGE_TYPE_SETUP_CONNECTION_ERROR,
+        }),
         true,
     );
     let (sniffer, sniffer_addr) =
