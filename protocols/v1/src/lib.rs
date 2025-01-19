@@ -42,6 +42,7 @@ pub mod json_rpc;
 pub mod methods;
 pub mod utils;
 
+use async_trait::async_trait;
 use std::convert::{TryFrom, TryInto};
 use tracing::debug;
 
@@ -222,6 +223,177 @@ pub trait IsServer<'a> {
     fn notify(&mut self) -> Result<json_rpc::Message, Error>;
 
     fn handle_set_difficulty(&mut self, value: f64) -> Result<json_rpc::Message, Error> {
+        let set_difficulty = server_to_client::SetDifficulty { value };
+        Ok(set_difficulty.into())
+    }
+}
+
+/// async version of IsServer trait
+#[async_trait]
+pub trait IsServerAsync<'a> {
+    /// Deserialize a [raw json_rpc message][a] into a [stratum v1 message][b] and handle the
+    /// result.
+    ///
+    /// [a]: crate::...
+    /// [b]:
+    async fn handle_message(
+        &mut self,
+        msg: json_rpc::Message,
+    ) -> Result<Option<json_rpc::Response>, Error<'a>>
+        where
+            Self: std::marker::Sized,
+    {
+        // Server shoudln't receive json_rpc responses
+        if msg.is_response() {
+            Err(Error::InvalidJsonRpcMessageKind)
+        } else {
+            self.handle_request(msg.try_into()?).await
+        }
+    }
+
+    /// Call the right handler according with the called method
+    async fn handle_request(
+        &mut self,
+        request: methods::Client2Server<'a>,
+    ) -> Result<Option<json_rpc::Response>, Error<'a>>
+        where
+            Self: std::marker::Sized,
+    {
+        match request {
+            methods::Client2Server::SuggestDifficulty() => Ok(None),
+            methods::Client2Server::Authorize(authorize) => {
+                let authorized = self.handle_authorize(&authorize).await;
+                if authorized {
+                    self.authorize(&authorize.name).await;
+                }
+                Ok(Some(authorize.respond(authorized)))
+            }
+            methods::Client2Server::Configure(configure) => {
+                debug!("{:?}", configure);
+                self.set_version_rolling_mask(configure.version_rolling_mask()).await;
+                self.set_version_rolling_min_bit(configure.version_rolling_min_bit_count()).await;
+                let (version_rolling, min_diff) = self.handle_configure(&configure).await;
+                Ok(Some(configure.respond(version_rolling, min_diff)))
+            }
+            methods::Client2Server::ExtranonceSubscribe(_) => {
+                self.handle_extranonce_subscribe().await;
+                Ok(None)
+            }
+            methods::Client2Server::Submit(submit) => {
+                let has_valid_version_bits = match &submit.version_bits {
+                    Some(a) => {
+                        if let Some(version_rolling_mask) = self.version_rolling_mask().await {
+                            version_rolling_mask.check_mask(a)
+                        } else {
+                            false
+                        }
+                    }
+                    None => self.version_rolling_mask().await.is_none(),
+                };
+
+                let is_valid_submission = self.is_authorized(&submit.user_name).await
+                    && self.extranonce2_size().await == submit.extra_nonce2.len()
+                    && has_valid_version_bits;
+
+                if is_valid_submission {
+                    let accepted = self.handle_submit(&submit).await;
+                    Ok(Some(submit.respond(accepted)))
+                } else {
+                    Err(Error::InvalidSubmission)
+                }
+            }
+            methods::Client2Server::Subscribe(subscribe) => {
+                let subscriptions = self.handle_subscribe(&subscribe).await;
+                let extra_n1 = self.set_extranonce1(None).await;
+                let extra_n2_size = self.set_extranonce2_size(None).await;
+                Ok(Some(subscribe.respond(
+                    subscriptions,
+                    extra_n1,
+                    extra_n2_size,
+                )))
+            }
+        }
+    }
+
+    /// This message (JSON RPC Request) SHOULD be the first message sent by the miner after the
+    /// connection with the server is established.
+    async fn handle_configure(
+        &mut self,
+        request: &client_to_server::Configure,
+    ) -> (Option<server_to_client::VersionRollingParams>, Option<bool>);
+
+    /// On the beginning of the session, client subscribes current connection for receiving mining
+    /// jobs.
+    ///
+    /// The client can specify [mining.notify][a] job_id the client wishes to resume working with
+    ///
+    /// The result contains three items:
+    /// * Subscriptions details: 2-tuple with name of subscribed notification and subscription ID.
+    ///   Teoretically it may be used for unsubscribing, but obviously miners won't use it.
+    /// * Extranonce1 - Hex-encoded, per-connection unique string which will be used for coinbase
+    ///   serialization later. Keep it safe!
+    /// * Extranonce2_size - Represents expected length of extranonce2 which will be generated by
+    ///   the miner.
+    ///
+    /// Almost instantly after the subscription server start to send [jobs][a]
+    ///
+    /// This function return the first item of the result (2 tuple with name of subscibed ...)
+    ///
+    /// [a]: crate::methods::server_to_client::Notify
+    async fn handle_subscribe(&self, request: &client_to_server::Subscribe) -> Vec<(String, String)>;
+
+    /// You can authorize as many workers as you wish and at any
+    /// time during the session. In this way, you can handle big basement of independent mining rigs
+    /// just by one Stratum connection.
+    ///
+    /// https://bitcoin.stackexchange.com/questions/29416/how-do-pool-servers-handle-multiple-workers-sharing-one-connection-with-stratum
+    async fn handle_authorize(&self, request: &client_to_server::Authorize) -> bool;
+
+    /// When miner find the job which meets requested difficulty, it can submit share to the server.
+    /// Only [Submit](client_to_server::Submit) requests for authorized user names can be submitted.
+    async fn handle_submit(&self, request: &client_to_server::Submit<'a>) -> bool;
+
+    /// Indicates to the server that the client supports the mining.set_extranonce method.
+    async fn handle_extranonce_subscribe(&self);
+
+    async fn is_authorized(&self, name: &str) -> bool;
+
+    async fn authorize(&mut self, name: &str);
+
+    /// Set extranonce1 to extranonce1 if provided. If not create a new one and set it.
+    async fn set_extranonce1(&mut self, extranonce1: Option<Extranonce<'a>>) -> Extranonce<'a>;
+
+    async fn extranonce1(&self) -> Extranonce<'a>;
+
+    /// Set extranonce2_size to extranonce2_size if provided. If not create a new one and set it.
+    async fn set_extranonce2_size(&mut self, extra_nonce2_size: Option<usize>) -> usize;
+
+    async fn extranonce2_size(&self) -> usize;
+
+    async fn version_rolling_mask(&self) -> Option<HexU32Be>;
+
+    async fn set_version_rolling_mask(&mut self, mask: Option<HexU32Be>);
+
+    async fn set_version_rolling_min_bit(&mut self, mask: Option<HexU32Be>);
+
+    async fn update_extranonce(
+        &mut self,
+        extra_nonce1: Extranonce<'a>,
+        extra_nonce2_size: usize,
+    ) -> Result<json_rpc::Message, Error<'a>> {
+        self.set_extranonce1(Some(extra_nonce1.clone())).await;
+        self.set_extranonce2_size(Some(extra_nonce2_size)).await;
+
+        Ok(server_to_client::SetExtranonce {
+            extra_nonce1,
+            extra_nonce2_size,
+        }
+            .into())
+    }
+
+    async fn notify(&mut self) -> Result<json_rpc::Message, Error>;
+
+    async fn handle_set_difficulty(&mut self, value: f64) -> Result<json_rpc::Message, Error> {
         let set_difficulty = server_to_client::SetDifficulty { value };
         Ok(set_difficulty.into())
     }
