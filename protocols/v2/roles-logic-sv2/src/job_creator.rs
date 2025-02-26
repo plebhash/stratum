@@ -67,7 +67,7 @@ impl JobsCreators {
         template: &mut NewTemplate,
         version_rolling_allowed: bool,
         mut pool_coinbase_outputs: Vec<TxOut>,
-        additional_coinbase_script_data: Vec<u8>,
+        additional_coinbase_script_data_len: usize,
     ) -> Result<NewExtendedMiningJob<'static>, Error> {
         let server_tx_outputs = template.coinbase_tx_outputs.to_vec();
         let mut outputs = tx_outputs_to_costum_scripts(&server_tx_outputs);
@@ -84,7 +84,7 @@ impl JobsCreators {
         new_extended_job(
             template,
             &mut pool_coinbase_outputs,
-            additional_coinbase_script_data,
+            additional_coinbase_script_data_len,
             next_job_id,
             version_rolling_allowed,
             self.extranonce_len,
@@ -137,7 +137,7 @@ impl JobsCreators {
 /// Converts custom job into extended job
 pub fn extended_job_from_custom_job(
     referenced_job: &mining_sv2::SetCustomMiningJob,
-    additional_coinbase_script_data: Vec<u8>,
+    additional_coinbase_script_data_len: usize,
     extranonce_len: u8,
 ) -> Result<NewExtendedMiningJob<'static>, Error> {
     let mut outputs =
@@ -158,7 +158,7 @@ pub fn extended_job_from_custom_job(
     new_extended_job(
         &mut template,
         &mut outputs,
-        additional_coinbase_script_data,
+        additional_coinbase_script_data_len,
         0,
         true,
         extranonce_len,
@@ -178,7 +178,7 @@ pub fn extended_job_from_custom_job(
 fn new_extended_job(
     new_template: &mut NewTemplate,
     coinbase_outputs: &mut [TxOut],
-    additional_coinbase_script_data: Vec<u8>,
+    additional_coinbase_script_data_len: usize,
     job_id: u32,
     version_rolling_allowed: bool,
     extranonce_len: u8,
@@ -202,7 +202,7 @@ fn new_extended_job(
         new_template.coinbase_tx_locktime,
         new_template.coinbase_tx_input_sequence,
         coinbase_outputs.to_vec(),
-        additional_coinbase_script_data,
+        additional_coinbase_script_data_len,
         extranonce_len,
     );
 
@@ -324,12 +324,7 @@ pub mod tests {
         let mut jobs_creators = JobsCreators::new(32);
 
         let job = jobs_creators
-            .on_new_template(
-                template.borrow_mut(),
-                false,
-                vec![out],
-                "".as_bytes().to_vec(),
-            )
+            .on_new_template(template.borrow_mut(), false, vec![out], 0)
             .unwrap();
 
         assert_eq!(
@@ -353,12 +348,7 @@ pub mod tests {
 
         assert_eq!(jobs_creators.lasts_new_template.len(), 0);
 
-        let _ = jobs_creators.on_new_template(
-            template.borrow_mut(),
-            false,
-            vec![out],
-            "".as_bytes().to_vec(),
-        );
+        let _ = jobs_creators.on_new_template(template.borrow_mut(), false, vec![out], 0);
 
         assert_eq!(jobs_creators.lasts_new_template.len(), 1);
         assert_eq!(jobs_creators.lasts_new_template[0], template);
@@ -392,12 +382,7 @@ pub mod tests {
         let mut jobs_creators = JobsCreators::new(32);
 
         //Create a template
-        let _ = jobs_creators.on_new_template(
-            template.borrow_mut(),
-            false,
-            vec![out],
-            "".as_bytes().to_vec(),
-        );
+        let _ = jobs_creators.on_new_template(template.borrow_mut(), false, vec![out], 0);
         let test_id = template.template_id;
 
         // Create a SetNewPrevHash with matching template_id

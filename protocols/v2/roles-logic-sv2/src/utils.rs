@@ -172,11 +172,11 @@ impl Coinbase {
         lock_time: u32,
         sequence: u32,
         coinbase_outputs: Vec<TxOut>,
-        additional_coinbase_script_data: Vec<u8>,
+        additional_coinbase_script_data_len: usize,
         extranonce_len: u8,
     ) -> Self {
         let mut script_sig = script_sig_prefix.clone();
-        script_sig.extend_from_slice(&additional_coinbase_script_data);
+        script_sig.extend_from_slice(&vec![0_u8; additional_coinbase_script_data_len]);
         script_sig.extend_from_slice(&vec![0; extranonce_len as usize]);
         let tx_in = TxIn {
             previous_output: OutPoint::null(),
@@ -197,7 +197,7 @@ impl Coinbase {
             tx,
             // TODO: move additional_coinbase_script_data to extranonce_prefix
             // (part of original PR #1248)
-            script_sig_prefix_len: script_sig_prefix.len() + additional_coinbase_script_data.len(),
+            script_sig_prefix_len: script_sig_prefix.len() + additional_coinbase_script_data_len,
         }
     }
 
