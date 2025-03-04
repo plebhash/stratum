@@ -111,6 +111,8 @@ pub enum Error {
     LogicErrorMessage(std::boxed::Box<AllMessages<'static>>),
     /// JD server cannot propagate the block due to missing transactions
     JDSMissingTransactions,
+    /// Error when building a Coinbase using the builder pattern
+    CoinbaseBuilderError(String),
     IoError(std::io::Error),
 }
 
@@ -209,6 +211,7 @@ impl Display for Error {
             HashrateError(e) => write!(f, "Impossible to get Hashrate: {:?}", e),
             LogicErrorMessage(e) => write!(f, "Message is well formatted but can not be handled: {:?}", e),
             JDSMissingTransactions => write!(f, "JD server cannot propagate the block: missing transactions"),
+            CoinbaseBuilderError(e) => write!(f, "Error when building a Coinbase using the builder pattern: {}", e),
             IoError(e) => write!(f, "IO error: {:?}", e),
         }
     }

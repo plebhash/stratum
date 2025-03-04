@@ -196,15 +196,16 @@ fn new_extended_job(
 
     let script_sig_prefix = new_template.coinbase_prefix.to_vec();
 
-    let coinbase = Coinbase::new(
-        script_sig_prefix,
-        tx_version,
-        new_template.coinbase_tx_locktime,
-        new_template.coinbase_tx_input_sequence,
-        coinbase_outputs.to_vec(),
-        additional_coinbase_script_data_len,
-        extranonce_len,
-    );
+    let coinbase = Coinbase::builder()
+        .script_sig_prefix(script_sig_prefix)
+        .version(tx_version)
+        .lock_time(new_template.coinbase_tx_locktime)
+        .sequence(new_template.coinbase_tx_input_sequence)
+        .coinbase_outputs(coinbase_outputs.to_vec())
+        .additional_coinbase_script_data_len(additional_coinbase_script_data_len)
+        .extranonce_len(extranonce_len)
+        .build()
+        .map_err(|e| Error::CoinbaseBuilderError(e.to_string()))?;
 
     let min_ntime = binary_sv2::Sv2Option::new(if new_template.future_template {
         None

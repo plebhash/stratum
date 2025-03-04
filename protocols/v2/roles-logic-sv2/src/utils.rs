@@ -6,7 +6,6 @@
 //! more.
 
 use binary_sv2::{Seq064K, ShortTxId, B064K, U256};
-use bitcoin::Block;
 use job_declaration_sv2::{DeclareMiningJob, SubmitSolutionJd};
 use primitive_types::U256 as U256Primitive;
 use siphasher::sip::SipHasher24;
@@ -27,7 +26,7 @@ use stratum_common::{
         hashes::{sha256, sha256d::Hash as DHash, Hash},
         secp256k1::{All, Secp256k1},
         transaction::Version as TxVersion,
-        CompactTarget, OutPoint, PublicKey, ScriptBuf, ScriptHash, Transaction, TxIn, TxOut,
+        Block, CompactTarget, OutPoint, PublicKey, ScriptBuf, ScriptHash, Transaction, TxIn, TxOut,
         WScriptHash, Witness, XOnlyPublicKey,
     },
 };
@@ -166,39 +165,9 @@ pub struct Coinbase {
 }
 
 impl Coinbase {
-    pub fn new(
-        script_sig_prefix: Vec<u8>,
-        version: i32,
-        lock_time: u32,
-        sequence: u32,
-        coinbase_outputs: Vec<TxOut>,
-        additional_coinbase_script_data_len: usize,
-        extranonce_len: u8,
-    ) -> Self {
-        let mut script_sig = script_sig_prefix.clone();
-        script_sig.extend_from_slice(&vec![0_u8; additional_coinbase_script_data_len]);
-        script_sig.extend_from_slice(&vec![0; extranonce_len as usize]);
-        let tx_in = TxIn {
-            previous_output: OutPoint::null(),
-            script_sig: script_sig.into(),
-            sequence: bitcoin::Sequence(sequence),
-            witness: Witness::from(vec![] as Vec<Vec<u8>>), /* empty witness (for bip141-stripped
-                                                             * coinbase_tx_prefix and
-                                                             * coinbase_tx_suffix) */
-        };
-        let tx = Transaction {
-            version: TxVersion::non_standard(version),
-            lock_time: LockTime::from_consensus(lock_time),
-            input: vec![tx_in],
-            output: coinbase_outputs.to_vec(),
-        };
-
-        Self {
-            tx,
-            // TODO: move additional_coinbase_script_data to extranonce_prefix
-            // (part of original PR #1248)
-            script_sig_prefix_len: script_sig_prefix.len() + additional_coinbase_script_data_len,
-        }
+    /// Creates a new builder for constructing a Coinbase instance.
+    pub fn builder() -> CoinbaseBuilder {
+        CoinbaseBuilder::default()
     }
 
     // serialize input from Transaction object
@@ -272,6 +241,122 @@ impl Coinbase {
         coinbase_tx_suffix.extend_from_slice(&serialized_outputs.concat());
         coinbase_tx_suffix.extend_from_slice(&lock_time_u32.to_le_bytes());
         coinbase_tx_suffix.try_into().map_err(Error::BinarySv2Error)
+    }
+}
+
+/// Builder for creating Coinbase instances.
+///
+/// This builder provides a fluent interface for constructing Coinbase objects
+/// with optional parameters and improved readability.
+#[derive(Default)]
+pub struct CoinbaseBuilder {
+    script_sig_prefix: Option<Vec<u8>>,
+    version: Option<i32>,
+    lock_time: Option<u32>,
+    sequence: Option<u32>,
+    coinbase_outputs: Option<Vec<TxOut>>,
+    additional_coinbase_script_data_len: Option<usize>,
+    extranonce_len: Option<u8>,
+}
+
+impl CoinbaseBuilder {
+    /// Creates a new CoinbaseBuilder with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the script_sig_prefix for the coinbase transaction.
+    pub fn script_sig_prefix(mut self, script_sig_prefix: Vec<u8>) -> Self {
+        self.script_sig_prefix = Some(script_sig_prefix);
+        self
+    }
+
+    /// Sets the version for the coinbase transaction.
+    pub fn version(mut self, version: i32) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Sets the lock_time for the coinbase transaction.
+    pub fn lock_time(mut self, lock_time: u32) -> Self {
+        self.lock_time = Some(lock_time);
+        self
+    }
+
+    /// Sets the sequence for the coinbase transaction.
+    pub fn sequence(mut self, sequence: u32) -> Self {
+        self.sequence = Some(sequence);
+        self
+    }
+
+    /// Sets the coinbase_outputs for the coinbase transaction.
+    pub fn coinbase_outputs(mut self, coinbase_outputs: Vec<TxOut>) -> Self {
+        self.coinbase_outputs = Some(coinbase_outputs);
+        self
+    }
+
+    /// Sets the additional_coinbase_script_data_len for the coinbase transaction.
+    pub fn additional_coinbase_script_data_len(mut self, len: usize) -> Self {
+        self.additional_coinbase_script_data_len = Some(len);
+        self
+    }
+
+    /// Sets the extranonce_len for the coinbase transaction.
+    pub fn extranonce_len(mut self, len: u8) -> Self {
+        self.extranonce_len = Some(len);
+        self
+    }
+
+    /// Builds the Coinbase instance with the configured parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any required parameter is missing.
+    pub fn build(self) -> Result<Coinbase, &'static str> {
+        let script_sig_prefix = self
+            .script_sig_prefix
+            .ok_or("script_sig_prefix is required")?;
+        let version = self.version.ok_or("version is required")?;
+        let lock_time = self.lock_time.ok_or("lock_time is required")?;
+        let sequence = self.sequence.ok_or("sequence is required")?;
+        let coinbase_outputs = self
+            .coinbase_outputs
+            .ok_or("coinbase_outputs is required")?;
+        let additional_coinbase_script_data_len = self
+            .additional_coinbase_script_data_len
+            .ok_or("additional_coinbase_script_data_len is required")?;
+        let extranonce_len = self.extranonce_len.ok_or("extranonce_len is required")?;
+
+        // Create the script_sig by combining the prefix with additional data and extranonce
+        let mut script_sig = script_sig_prefix.clone();
+        script_sig.extend_from_slice(&vec![0_u8; additional_coinbase_script_data_len]);
+        script_sig.extend_from_slice(&vec![0; extranonce_len as usize]);
+
+        // Create the transaction input
+        let tx_in = TxIn {
+            previous_output: OutPoint::null(),
+            script_sig: script_sig.into(),
+            sequence: bitcoin::Sequence(sequence),
+            witness: Witness::from(vec![] as Vec<Vec<u8>>), /* empty witness (for bip141-stripped
+                                                             * coinbase_tx_prefix and
+                                                             * coinbase_tx_suffix) */
+        };
+
+        // Create the transaction
+        let tx = Transaction {
+            version: TxVersion::non_standard(version),
+            lock_time: LockTime::from_consensus(lock_time),
+            input: vec![tx_in],
+            output: coinbase_outputs.to_vec(),
+        };
+
+        // Create and return the Coinbase
+        Ok(Coinbase {
+            tx,
+            // TODO: move additional_coinbase_script_data to extranonce_prefix
+            // (part of original PR #1248)
+            script_sig_prefix_len: script_sig_prefix.len() + additional_coinbase_script_data_len,
+        })
     }
 }
 
@@ -1332,5 +1417,62 @@ mod tests {
         m.safe_lock(|i| *i += 1).unwrap();
         // m.super_safe_lock(|i| *i = (*i).checked_add(1).unwrap()); // will not compile
         m.super_safe_lock(|i| *i = (*i).checked_add(1).unwrap_or_default()); // compiles
+    }
+
+    #[test]
+    fn test_coinbase_builder() {
+        // Sample data for testing
+        let script_sig_prefix = vec![1, 2, 3];
+        let version = 1;
+        let lock_time = 0;
+        let sequence = 0xFFFFFFFF;
+        let script_pubkey = ScriptBuf::new();
+        let coinbase_outputs = vec![TxOut {
+            value: bitcoin::Amount::from_sat(5000000000), // 50 BTC
+            script_pubkey: script_pubkey.clone(),
+        }];
+        let additional_data_len = 10;
+        let extranonce_len = 8;
+
+        // Build a coinbase using the builder pattern
+        let coinbase_result = Coinbase::builder()
+            .script_sig_prefix(script_sig_prefix.clone())
+            .version(version)
+            .lock_time(lock_time)
+            .sequence(sequence)
+            .coinbase_outputs(coinbase_outputs.clone())
+            .additional_coinbase_script_data_len(additional_data_len)
+            .extranonce_len(extranonce_len)
+            .build();
+
+        assert!(
+            coinbase_result.is_ok(),
+            "Failed to build Coinbase: {:?}",
+            coinbase_result.err()
+        );
+        let coinbase = coinbase_result.unwrap();
+
+        // Verify the coinbase was built correctly
+        assert_eq!(
+            coinbase.script_sig_prefix_len,
+            script_sig_prefix.len() + additional_data_len
+        );
+        assert_eq!(coinbase.tx.version.0, version);
+        assert_eq!(coinbase.tx.lock_time.to_consensus_u32(), lock_time);
+        assert_eq!(coinbase.tx.input[0].sequence.0, sequence);
+        assert_eq!(coinbase.tx.output.len(), coinbase_outputs.len());
+        assert_eq!(coinbase.tx.output[0].value, coinbase_outputs[0].value);
+        assert_eq!(coinbase.tx.output[0].script_pubkey, script_pubkey);
+
+        // Test that the builder fails when required parameters are missing
+        let incomplete_builder = Coinbase::builder()
+            .script_sig_prefix(script_sig_prefix)
+            .version(version);
+
+        let result = incomplete_builder.build();
+        assert!(
+            result.is_err(),
+            "Builder should fail when parameters are missing"
+        );
     }
 }
