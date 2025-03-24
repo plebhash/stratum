@@ -32,7 +32,7 @@ use tracing::error;
 
 use crate::errors::Error;
 
-/// Generator of unique IDs for channels and groups.
+/// Generator of unique IDs.
 ///
 /// It keeps an internal counter, which is incremented every time a new unique id is requested.
 #[derive(Debug, PartialEq, Eq, Clone)]

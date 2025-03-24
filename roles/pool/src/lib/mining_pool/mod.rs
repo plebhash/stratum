@@ -1,5 +1,6 @@
 use crate::config::PoolConfig;
 
+use channel_factory::PoolChannelManager;
 use super::{
     error::{PoolError, PoolResult},
     status,
@@ -12,7 +13,6 @@ use key_utils::SignatureService;
 use network_helpers_sv2::noise_connection::Connection;
 use nohash_hasher::BuildNoHashHasher;
 use roles_logic_sv2::{
-    channel_logic::channel_factory::PoolChannelFactory,
     common_properties::{CommonDownstreamData, IsDownstream, IsMiningDownstream},
     errors::Error,
     handlers::mining::{ParseDownstreamMiningMessages, SendTo},
@@ -22,6 +22,7 @@ use roles_logic_sv2::{
     routing_logic::MiningRoutingLogic,
     template_distribution_sv2::{NewTemplate, SetNewPrevHash, SubmitSolution},
     utils::{CoinbaseOutput as CoinbaseOutput_, Mutex},
+    channel_logic::{ChannelFactory, ChannelFactoryTemplateDistribution},
 };
 use std::{collections::HashMap, convert::TryInto, net::SocketAddr, sync::Arc};
 use stratum_common::{
@@ -35,6 +36,7 @@ pub mod setup_connection;
 use setup_connection::SetupConnectionHandler;
 
 pub mod message_handler;
+pub mod channel_factory;
 
 pub type Message = AnyMessage<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
@@ -64,7 +66,7 @@ pub struct Downstream {
     sender: Sender<EitherFrame>,
     downstream_data: CommonDownstreamData,
     solution_sender: Sender<SubmitSolution<'static>>,
-    channel_factory: Arc<Mutex<PoolChannelFactory>>,
+    channel_factory: Arc<Mutex<PoolChannelManager>>,
 }
 
 /// Accept downstream connection
@@ -72,7 +74,7 @@ pub struct Pool {
     downstreams: HashMap<u32, Arc<Mutex<Downstream>>, BuildNoHashHasher<u32>>,
     solution_sender: Sender<SubmitSolution<'static>>,
     new_template_processed: bool,
-    channel_factory: Arc<Mutex<PoolChannelFactory>>,
+    channel_factory: Arc<Mutex<PoolChannelManager>>,
     last_prev_hash_template_id: u64,
     status_tx: status::Sender,
 }
@@ -84,7 +86,7 @@ impl Downstream {
         mut sender: Sender<EitherFrame>,
         solution_sender: Sender<SubmitSolution<'static>>,
         pool: Arc<Mutex<Pool>>,
-        channel_factory: Arc<Mutex<PoolChannelFactory>>,
+        channel_factory: Arc<Mutex<PoolChannelManager>>,
         status_tx: status::Sender,
         address: SocketAddr,
     ) -> PoolResult<Arc<Mutex<Self>>> {
@@ -93,10 +95,7 @@ impl Downstream {
             SetupConnectionHandler::setup(setup_connection, &mut receiver, &mut sender, address)
                 .await?;
 
-        let id = match downstream_data.header_only {
-            false => channel_factory.safe_lock(|c| c.new_group_id())?,
-            true => channel_factory.safe_lock(|c| c.new_standard_id_for_hom())?,
-        };
+        let id = channel_factory.safe_lock(|c| c.next_id())?;
 
         let self_ = Arc::new(Mutex::new(Downstream {
             id,
@@ -375,7 +374,7 @@ impl Pool {
             let job_id_res = self_
                 .safe_lock(|s| {
                     s.channel_factory
-                        .safe_lock(|f| f.on_new_prev_hash_from_tp(&new_prev_hash))
+                        .safe_lock(|f| f.on_set_new_prev_hash_tdp(new_prev_hash.clone()))
                         .map_err(|e| PoolError::PoisonLock(e.to_string()))
                 })
                 .map_err(|e| PoolError::PoisonLock(e.to_string()));
@@ -425,7 +424,7 @@ impl Pool {
             );
 
             let messages = channel_factory
-                .safe_lock(|cf| cf.on_new_template(&mut new_template))
+                .safe_lock(|cf| cf.on_new_template(new_template))
                 .map_err(|e| PoolError::PoisonLock(e.to_string()));
             let messages = handle_result!(status_tx, messages);
             let mut messages = handle_result!(status_tx, messages);
@@ -477,17 +476,18 @@ impl Pool {
         let pool_coinbase_outputs = get_coinbase_output(&config);
         info!("PUB KEY: {:?}", pool_coinbase_outputs);
         let extranonces = ExtendedExtranonce::new(range_0, range_1, range_2);
-        let creator = JobsCreators::new(extranonce_len as u8);
-        let kind = roles_logic_sv2::channel_logic::channel_factory::ExtendedChannelKind::Pool;
-        let channel_factory = Arc::new(Mutex::new(PoolChannelFactory::new(
-            ids,
-            extranonces,
-            creator,
-            shares_per_minute,
-            kind,
-            pool_coinbase_outputs.expect("Invalid coinbase output in config"),
-            config.pool_signature().clone().into(),
-        )));
+        // let creator = JobsCreators::new(extranonce_len as u8);
+        // let kind = roles_logic_sv2::channel_logic::channel_factory::ExtendedChannelKind::Pool;
+        // let channel_factory = Arc::new(Mutex::new(PoolChannelFactory::new(
+        //     ids,
+        //     extranonces,
+        //     creator,
+        //     shares_per_minute,
+        //     kind,
+        //     pool_coinbase_outputs.expect("Invalid coinbase output in config"),
+        //     config.pool_signature().clone().into(),
+        // )));
+        let channel_factory = Arc::new(Mutex::new(PoolChannelManager::new()));
         let pool = Arc::new(Mutex::new(Pool {
             downstreams: HashMap::with_hasher(BuildNoHashHasher::default()),
             solution_sender,

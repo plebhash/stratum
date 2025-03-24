@@ -5,7 +5,7 @@ use std::{
 };
 
 use roles_logic_sv2::parsers::Mining;
-
+use roles_logic_sv2::channel_logic::{ChannelFactoryError, ChannelFactoryTemplateDistributionError};
 #[derive(std::fmt::Debug)]
 pub enum PoolError {
     Io(std::io::Error),
@@ -20,6 +20,8 @@ pub enum PoolError {
     ComponentShutdown(String),
     Custom(String),
     Sv2ProtocolError((u32, Mining<'static>)),
+    ChannelFactoryTemplateDistribution(ChannelFactoryTemplateDistributionError),
+    ChannelFactoryError(ChannelFactoryError),
 }
 
 impl std::fmt::Display for PoolError {
@@ -39,6 +41,12 @@ impl std::fmt::Display for PoolError {
             Custom(ref e) => write!(f, "Custom SV2 error: `{:?}`", e),
             Sv2ProtocolError(ref e) => {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{:?}`", e)
+            }
+            ChannelFactoryTemplateDistribution(ref e) => {
+                write!(f, "Channel Factory Template Distribution Error: `{:?}`", e)
+            }
+            ChannelFactoryError(ref e) => {
+                write!(f, "Channel Factory Error: `{:?}`", e)
             }
         }
     }
@@ -108,5 +116,17 @@ impl<T> From<PoisonError<MutexGuard<'_, T>>> for PoolError {
 impl From<(u32, Mining<'static>)> for PoolError {
     fn from(e: (u32, Mining<'static>)) -> Self {
         PoolError::Sv2ProtocolError(e)
+    }
+}
+
+impl From<ChannelFactoryTemplateDistributionError> for PoolError {
+    fn from(e: ChannelFactoryTemplateDistributionError) -> PoolError {
+        PoolError::ChannelFactoryTemplateDistribution(e)
+    }
+}
+
+impl From<ChannelFactoryError> for PoolError {
+    fn from(e: ChannelFactoryError) -> PoolError {
+        PoolError::ChannelFactoryError(e)
     }
 }
