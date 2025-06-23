@@ -1,7 +1,7 @@
 .idea
 */**/target
-/protocols/guix-example/guix-example.h
-/protocols/Cargo.lock
+/stratum-core/Cargo.lock
+/stratum-core/*/Cargo.lock
 /benches/Cargo.lock
 /ignore
 /vendor/ed25519-dalek/target
