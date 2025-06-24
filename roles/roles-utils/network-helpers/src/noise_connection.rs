@@ -15,11 +15,13 @@ use tokio::{
     },
     task,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct Connection {
     pub state: codec_sv2::State,
+    pub cancellation_token: CancellationToken,
 }
 
 async fn send_message<'a, Message: Serialize + Deserialize<'a> + GetSize + Send + 'static>(
@@ -142,11 +144,24 @@ impl Connection {
 
         // Spawn Reader
         let read_state = state.clone();
-        Self::spawn_reader(reader, read_state, address, sender_incoming.clone());
+        let cancellation_token = CancellationToken::new();
+        Self::spawn_reader(
+            reader,
+            read_state,
+            address,
+            sender_incoming.clone(),
+            cancellation_token.clone(),
+        );
 
         // Spawn Writer
         let write_state = state;
-        Self::spawn_writer(writer, write_state, address, receiver_outgoing.clone());
+        Self::spawn_writer(
+            writer,
+            write_state,
+            address,
+            receiver_outgoing.clone(),
+            cancellation_token.clone(),
+        );
 
         Ok((receiver_incoming, sender_outgoing))
     }
@@ -156,24 +171,34 @@ impl Connection {
         mut reader_state: State,
         address: std::net::SocketAddr,
         sender_incoming: Sender<StandardEitherFrame<Message>>,
+        cancellation_token: CancellationToken,
     ) -> task::JoinHandle<()> {
         task::spawn(async move {
             let mut decoder = StandardNoiseDecoder::<Message>::new();
             loop {
-                match receive_message(&mut reader, &mut reader_state, &mut decoder).await {
-                    Ok(frame) => {
-                        if sender_incoming.send(frame).await.is_err() {
-                            error!("Shutting down reader for {}", address);
-                            break;
-                        }
-                    }
-                    Err(Error::CodecError(codec_sv2::Error::MissingBytes(_))) => {
-                        debug!("Waiting for more bytes while reading stream");
-                    }
-                    Err(e) => {
-                        error!("Reader shutting down due to error: {:?}", e);
-                        sender_incoming.close();
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        error!("Reader shutting down due to cancellation");
                         break;
+                    }
+                    result = receive_message(&mut reader, &mut reader_state, &mut decoder) => {
+                        match result {
+                            Ok(frame) => {
+                                if sender_incoming.send(frame).await.is_err() {
+                                    error!("Shutting down reader for {}", address);
+                                    cancellation_token.cancel();
+                                    break;
+                                }
+                            }
+                            Err(Error::CodecError(codec_sv2::Error::MissingBytes(_))) => {
+                                debug!("Waiting for more bytes while reading stream");
+                            }
+                            Err(e) => {
+                                error!("Reader shutting down due to error: {:?}", e);
+                                cancellation_token.cancel();
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -185,16 +210,33 @@ impl Connection {
         mut write_state: State,
         address: std::net::SocketAddr,
         receiver_outgoing: Receiver<StandardEitherFrame<Message>>,
+        cancellation_token: CancellationToken,
     ) -> task::JoinHandle<()> {
         task::spawn(async move {
             let mut encoder = codec_sv2::NoiseEncoder::<Message>::new();
-            while let Ok(frame) = receiver_outgoing.recv().await {
-                if let Err(e) =
-                    send_message(&mut writer, frame, &mut write_state, &mut encoder).await
-                {
-                    error!("Error while writing to client {}: {:?}", address, e);
-                    let _ = writer.shutdown().await;
-                    break;
+            loop {
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        error!("Writer shutting down due to cancellation");
+                        break;
+                    }
+                    result = receiver_outgoing.recv() => {
+                        let frame = if let Ok(frame) = result {
+                            frame
+                        } else {
+                            error!("Writer shutting down due to cancellation");
+                            cancellation_token.cancel();
+                            break;
+                        };
+                        if let Err(e) =
+                            send_message(&mut writer, frame, &mut write_state, &mut encoder).await
+                        {
+                            error!("Error while writing to client {}: {:?}", address, e);
+                            cancellation_token.cancel();
+                            let _ = writer.shutdown().await;
+                            break;
+                        }
+                    }
                 }
             }
             let _ = writer.shutdown().await;
