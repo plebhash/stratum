@@ -57,6 +57,10 @@ jobs:
         run: |
           ./scripts/release-libs.sh protocols/v2/noise-sv2
 
+      - name: Publish crate channels_sv2
+        run: |
+          ./scripts/release-libs.sh protocols/v2/channels-sv2
+
       - name: Publish crate codec_sv2
         run: |
           ./scripts/release-libs.sh protocols/v2/codec-sv2
