@@ -18,7 +18,6 @@
 //!
 //! - `prop_test`: Enables support for property testing in [`template_distribution_sv2`] crate.
 pub mod channel_logic;
-pub mod channels;
 pub mod common_properties;
 pub mod errors;
 pub mod handlers;
@@ -28,6 +27,7 @@ pub mod parsers;
 pub mod utils;
 pub mod vardiff;
 pub use bitcoin;
+pub use channels_sv2;
 pub use codec_sv2;
 pub use common_messages_sv2;
 pub use errors::Error;

@@ -1,6 +1,6 @@
-use crate::channels::server::jobs::{error::StandardJobError, Job};
+use crate::server::jobs::{error::StandardJobError, Job};
+use binary_sv2::{Sv2Option, U256};
 use bitcoin::{consensus::Decodable, transaction::TxOut};
-use codec_sv2::binary_sv2::{Sv2Option, U256};
 use mining_sv2::NewMiningJob;
 use template_distribution_sv2::NewTemplate;
 

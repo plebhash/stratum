@@ -1,26 +1,22 @@
 //! Mining Server abstraction over the state of a Sv2 Extended Channel
 
 use crate::{
-    channels::{
-        chain_tip::ChainTip,
-        server::{
-            error::ExtendedChannelError,
-            jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore, JobOrigin},
-            share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
-        },
+    chain_tip::ChainTip,
+    merkle_root::merkle_root_from_path,
+    server::{
+        error::ExtendedChannelError,
+        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore, JobOrigin},
+        share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
-    utils::{
-        bytes_to_hex, hash_rate_to_target, merkle_root_from_path, target_to_difficulty,
-        u256_to_block_hash,
-    },
+    target::{bytes_to_hex, hash_rate_to_target, target_to_difficulty, u256_to_block_hash},
 };
+use binary_sv2::{self};
 use bitcoin::{
     blockdata::block::{Header, Version},
     hashes::sha256d::Hash,
     transaction::TxOut,
     CompactTarget, Target as BitcoinTarget,
 };
-use codec_sv2::binary_sv2;
 use mining_sv2::{SetCustomMiningJob, SubmitSharesExtended, Target, MAX_EXTRANONCE_LEN};
 use std::{collections::HashMap, convert::TryInto};
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash as SetNewPrevHashTdp};
@@ -564,9 +560,8 @@ impl<'a> ExtendedChannel<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::channels::{
+    use crate::{
         chain_tip::ChainTip,
-        client::extended::ExtendedJob,
         server::{
             error::ExtendedChannelError,
             extended::ExtendedChannel,
@@ -574,8 +569,8 @@ mod tests {
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
     };
+    use binary_sv2::Sv2Option;
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf};
-    use codec_sv2::binary_sv2::Sv2Option;
     use mining_sv2::{NewExtendedMiningJob, SubmitSharesExtended, Target, MAX_EXTRANONCE_LEN};
     use std::convert::TryInto;
     use template_distribution_sv2::{NewTemplate, SetNewPrevHash};

@@ -4,7 +4,7 @@
 //! module. It includes the [`Error`] enum for representing various errors.
 
 use crate::{
-    channels::server::error::{ExtendedChannelError, GroupChannelError, StandardChannelError},
+    channels_sv2::server::error::{ExtendedChannelError, GroupChannelError, StandardChannelError},
     common_properties::CommonDownstreamData,
     parsers::AnyMessage as AllMessages,
     utils::InputError,
