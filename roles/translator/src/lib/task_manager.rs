@@ -4,7 +4,7 @@ use tokio::task::JoinHandle;
 /// Manages a collection of spawned tokio tasks.
 ///
 /// This struct provides a centralized way to spawn, track, and manage the lifecycle
-/// of async tasks. It maintains a list of join handles that can
+/// of async tasks in the translator. It maintains a list of join handles that can
 /// be used to wait for all tasks to complete or abort them during shutdown.
 pub struct TaskManager {
     tasks: StdMutex<Vec<JoinHandle<()>>>,
@@ -40,6 +40,7 @@ impl TaskManager {
         let handle = tokio::spawn(async move {
             fut.await;
         });
+
         self.tasks.lock().unwrap().push(handle);
     }
 
