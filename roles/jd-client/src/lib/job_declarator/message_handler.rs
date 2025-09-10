@@ -4,7 +4,7 @@ use stratum_common::roles_logic_sv2::{
     },
     handlers_sv2::{HandleCommonMessagesFromServerAsync, HandlerError as Error},
 };
-use tracing::{debug, error, info};
+use tracing::{info, warn};
 
 use crate::{
     error::JDCError,
@@ -17,8 +17,7 @@ impl HandleCommonMessagesFromServerAsync for JobDeclarator {
         &mut self,
         msg: SetupConnectionSuccess,
     ) -> Result<(), Error> {
-        info!("Received SetupConnectionSuccess from JDS");
-        debug!(?msg, "SetupConnectionSuccess details");
+        info!("Received: {}", msg);
 
         let jd_mode = match msg.flags {
             0 => JdMode::CoinbaseOnly,
@@ -38,17 +37,12 @@ impl HandleCommonMessagesFromServerAsync for JobDeclarator {
         &mut self,
         msg: ChannelEndpointChanged,
     ) -> Result<(), Error> {
-        info!(
-            "Received ChannelEndpointChanged from JDS with channel_id: {}",
-            msg.channel_id
-        );
-        debug!("ChannelEndpointChanged: {msg:?}");
+        info!("Received: {}", msg);
         Ok(())
     }
 
     async fn handle_reconnect(&mut self, msg: Reconnect<'_>) -> Result<(), Error> {
-        info!("Received Reconnect from JDS");
-        debug!("Reconnect: {msg:?}");
+        info!("Received: {}", msg);
         Ok(())
     }
 
@@ -56,8 +50,7 @@ impl HandleCommonMessagesFromServerAsync for JobDeclarator {
         &mut self,
         msg: SetupConnectionError<'_>,
     ) -> Result<(), Error> {
-        info!("Received SetupConnectionError from JDS");
-        error!("SetupConnectionError: {msg:?}");
+        warn!("Received: {}", msg);
         Err(JDCError::Shutdown.into())
     }
 }

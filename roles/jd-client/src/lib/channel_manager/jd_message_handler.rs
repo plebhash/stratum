@@ -35,11 +35,7 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
         &mut self,
         msg: AllocateMiningJobTokenSuccess<'_>,
     ) -> Result<(), Error> {
-        info!(
-            "Received AllocateMiningJobTokenSuccess from JDS with request_id: {}",
-            msg.request_id
-        );
-        debug!("AllocateMiningJobTokenSuccess: {msg:?}");
+        info!("Received: {}", msg);
 
         let coinbase_changed = self.channel_manager_data.super_safe_lock(|data| {
             let changed = data.coinbase_outputs != msg.coinbase_outputs.to_vec();
@@ -118,13 +114,8 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
         &mut self,
         msg: DeclareMiningJobError<'_>,
     ) -> Result<(), Error> {
-        error!(
-            error_code = ?msg.error_code,
-            "Received DeclareMiningJobError from JDS"
-        );
-        debug!("DeclareMiningJobError: {msg:?}");
-
-        info!("⚠️ JDS refused the declared job with a DeclareMiningJobError ❌. Starting fallback mechanism.");
+        warn!("Received: {}", msg);
+        warn!("⚠️ JDS refused the declared job with a DeclareMiningJobError ❌. Starting fallback mechanism.");
         self.channel_manager_channel
             .status_sender
             .send(Status {
@@ -156,11 +147,7 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
         &mut self,
         msg: DeclareMiningJobSuccess<'_>,
     ) -> Result<(), Error> {
-        info!(
-            "Received DeclareMiningJobSuccess from JDS with request_id: {}",
-            msg.request_id
-        );
-        debug!("DeclareMiningJobSuccess: {msg:?}");
+        info!("Received: {}", msg);
 
         let Some(last_declare_job) = self
             .channel_manager_data
@@ -236,8 +223,7 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Error> {
         let request_id = msg.request_id;
 
-        info!("Received ProvideMissingTransactions from JDS with request_id: {request_id}");
-        debug!("ProvideMissingTransactions: {msg:?}");
+        info!("Received: {}", msg);
 
         let tx_store_entry = self
             .channel_manager_data

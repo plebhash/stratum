@@ -8,7 +8,7 @@ use stratum_common::roles_logic_sv2::{
     handlers_sv2::{HandleCommonMessagesFromClientAsync, HandlerError as Error},
     parsers_sv2::AnyMessage,
 };
-use tracing::{debug, info};
+use tracing::info;
 
 impl HandleCommonMessagesFromClientAsync for Downstream {
     // Handles the initial [`SetupConnection`] message from a downstream client.
@@ -33,8 +33,7 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
     // 4. Successful setup
     //    - If all validations pass, a [`SetupConnectionSuccess`] message is
     async fn handle_setup_connection(&mut self, msg: SetupConnection<'_>) -> Result<(), Error> {
-        info!("Received SetupConnection from downstream");
-        debug!("SetupConnection: {msg:?}");
+        info!("Received: {}", msg);
 
         if msg.protocol != Protocol::MiningProtocol {
             info!("Rejecting connection: SetupConnection asking for other protocols than mining protocol.");

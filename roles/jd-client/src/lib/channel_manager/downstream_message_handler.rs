@@ -80,7 +80,7 @@ impl<'a> From<(u32, Mining<'a>)> for RouteMessageTo<'a> {
     }
 }
 
-impl<'a> RouteMessageTo<'a> {
+impl RouteMessageTo<'_> {
     /// Forwards the message to its corresponding destination channel.
     ///
     /// The routing is handled as follows:
@@ -138,11 +138,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
     // - If found, remove the channel from its `extended_channels` and `standard_channels`.
     // - If not found, return an appropriate error.
     async fn handle_close_channel(&mut self, msg: CloseChannel<'_>) -> Result<(), Error> {
-        info!(
-            "Received CloseChannel from downstream with channel_id: {}",
-            msg.channel_id
-        );
-        debug!("CloseChannel: {msg:?}");
+        info!("Received: {}", msg);
         self.channel_manager_data
             .super_safe_lock(|channel_manager_data| {
                 let Some(downstream_id) = channel_manager_data
@@ -192,11 +188,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         &mut self,
         msg: OpenStandardMiningChannel<'_>,
     ) -> Result<(), Error> {
-        info!(
-            "Received OpenStandardMiningChannel message from downstream with request_id: {}",
-            msg.get_request_id_as_u32()
-        );
-        debug!("OpenStandardMiningChannel: {msg:?}");
         let request_id = msg.get_request_id_as_u32();
         let user_string = msg.user_identity.as_utf8_or_hex();
 
@@ -216,6 +207,8 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 return Err(JDCError::DownstreamIdNotFound.into());
             }
         };
+
+        info!(downstream_id, "Received: {}", msg);
 
         let build_error = |code: &str| {
             Mining::OpenMiningChannelError(OpenMiningChannelError {
@@ -455,12 +448,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         &mut self,
         msg: OpenExtendedMiningChannel<'_>,
     ) -> Result<(), Error> {
-        info!(
-            "Received OpenExtendedMiningChannel from downstream with request_id: {}",
-            msg.request_id
-        );
-        debug!("OpenExtendedMiningChannel: {msg:?}");
-
         let user_string = msg.user_identity.as_utf8_or_hex();
         let (user_identity, downstream_id) = match user_string.rsplit_once('#') {
             Some((user_identity, id)) => match id.parse::<u32>() {
@@ -476,7 +463,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             }
         };
 
-        info!(downstream_id, "Received OpenExtendedMiningChannel");
+        info!(downstream_id, "Received: {}", msg);
         let request_id = msg.get_request_id_as_u32();
 
         let nominal_hash_rate = msg.nominal_hash_rate;
@@ -670,11 +657,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
     // Returns an error if the downstream channel is missing or update
     // validation fails.
     async fn handle_update_channel(&mut self, msg: UpdateChannel<'_>) -> Result<(), Error> {
-        info!(
-            "Received UpdateChannel from downstream with channel_id: {}",
-            msg.channel_id
-        );
-        debug!("UpdateChannel: {msg:?}");
+        info!("Received: {}", msg);
         let channel_id = msg.channel_id;
         let new_nominal_hash_rate = msg.nominal_hash_rate;
         let requested_maximum_target = msg.maximum_target.into_static();
@@ -871,11 +854,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         &mut self,
         msg: SubmitSharesStandard,
     ) -> Result<(), Error> {
-        info!(
-            "Received SubmitSharesStandard from downstream with channel_id: {} and job_id: {}",
-            msg.channel_id, msg.job_id
-        );
-        debug!("SubmitSharesStandard: {msg}");
+        info!("Received SubmitSharesStandard");
         let channel_id = msg.channel_id;
         let job_id = msg.job_id;
 
@@ -918,7 +897,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 match res {
                     Ok(ShareValidationResult::Valid) => {
                         info!(
-                            "SubmitSharesStandard on downstream channel: valid share | channel_id: {}, sequence_number: {}",
+                            "SubmitSharesStandard on downstream channel: valid share | channel_id: {}, sequence_number: {} ☑️",
                             channel_id, msg.sequence_number
                         );
                         is_downstream_share_valid = true;
@@ -1073,11 +1052,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         &mut self,
         msg: SubmitSharesExtended<'_>,
     ) -> Result<(), Error> {
-        info!(
-            "Received SubmitSharesExtended from downstream with channel_id: {} and job_id {}",
-            msg.channel_id, msg.job_id
-        );
-        debug!("SubmitSharesExtended: {msg}");
+        info!("Received SubmitSharesExtended");
         let channel_id = msg.channel_id;
         let job_id = msg.job_id;
 
@@ -1266,11 +1241,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         &mut self,
         msg: SetCustomMiningJob<'_>,
     ) -> Result<(), Error> {
-        error!(
-            "Received SetCustomMiningJob from downstream with channel_id: {}",
-            msg.channel_id
-        );
-        debug!("SetCustomMiningJob: {msg:?}");
+        warn!("Received: {}", msg);
         Err(Error::UnexpectedMessage(MESSAGE_TYPE_SET_CUSTOM_MINING_JOB))
     }
 }

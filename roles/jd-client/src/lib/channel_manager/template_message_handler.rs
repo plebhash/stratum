@@ -8,7 +8,7 @@ use stratum_common::roles_logic_sv2::{
     parsers_sv2::{AnyMessage, JobDeclaration, Mining, TemplateDistribution},
     template_distribution_sv2::*,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     channel_manager::{downstream_message_handler::RouteMessageTo, ChannelManager, DeclaredJob},
@@ -31,11 +31,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
     // Also updates future/active template state and triggers token
     // allocation if needed.
     async fn handle_new_template(&mut self, msg: NewTemplate<'_>) -> Result<(), Error> {
-        info!(
-            "Received NewTemplate from Template Provider with template_id={}",
-            msg.template_id
-        );
-        debug!("NewTemplate: {msg:?}");
+        info!("Received: {}", msg);
 
         self.channel_manager_data.super_safe_lock(|data| {
             data.template_store
@@ -243,11 +239,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
         &mut self,
         msg: RequestTransactionDataError<'_>,
     ) -> Result<(), Error> {
-        warn!(
-            "Received RequestTransactionDataError from Template Provider with template_id: {}",
-            msg.template_id
-        );
-        info!("RequestTransactionDataError: {msg}");
+        warn!("Received: {}", msg);
         let error_code = msg.error_code.as_utf8_or_hex();
 
         if matches!(
@@ -271,8 +263,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
         &mut self,
         msg: RequestTransactionDataSuccess<'_>,
     ) -> Result<(), Error> {
-        info!("Received RequestTransactionDataSuccess from Template provider");
-        debug!("RequestTransactionDataSuccess: {msg:?}");
+        info!("Received: {}", msg);
 
         let transactions_data = msg.transaction_list;
         let excess_data = msg.excess_data;
@@ -385,11 +376,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
     // - Update the upstream channel state.
     // - Update all downstream channels and propagate the new `prevhash` via `SetNewPrevHash`.
     async fn handle_set_new_prev_hash(&mut self, msg: SetNewPrevHash<'_>) -> Result<(), Error> {
-        info!(
-            "Received SetNewPrevHash from Template Provider with template_id: {}",
-            msg.template_id
-        );
-        debug!("SetNewPrevHash: {msg:?}");
+        info!("Received: {}", msg);
 
         let (future_template, declare_job) = self.channel_manager_data.super_safe_lock(|data| {
             if let Some(upstream_channel) = data.upstream_channel.as_mut() {

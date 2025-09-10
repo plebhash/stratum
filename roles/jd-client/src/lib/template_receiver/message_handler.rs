@@ -4,7 +4,7 @@ use stratum_common::roles_logic_sv2::{
     },
     handlers_sv2::{HandleCommonMessagesFromServerAsync, HandlerError as Error},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::{error::JDCError, template_receiver::TemplateReceiver};
 
@@ -13,8 +13,7 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         msg: SetupConnectionSuccess,
     ) -> Result<(), Error> {
-        info!("Received SetupConnectionSuccess from TP");
-        debug!("SetupConnectionSuccess: {msg:?}");
+        info!("Received: {}", msg);
 
         Ok(())
     }
@@ -23,14 +22,12 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         msg: ChannelEndpointChanged,
     ) -> Result<(), Error> {
-        info!("Received ChannelEndpointChanged from TP");
-        debug!("ChannelEndpointChanged: {msg:?}");
+        info!("Received: {}", msg);
         Ok(())
     }
 
     async fn handle_reconnect(&mut self, msg: Reconnect<'_>) -> Result<(), Error> {
-        info!("Received Reconnect from TP");
-        debug!("Reconnect: {msg:?}");
+        info!("Received: {}", msg);
         Ok(())
     }
 
@@ -38,8 +35,7 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         msg: SetupConnectionError<'_>,
     ) -> Result<(), Error> {
-        warn!("Received SetupConnectionError from TP");
-        error!("SetupConnectionError: {msg:?}");
+        warn!("Received: {}", msg);
         Err(JDCError::Shutdown.into())
     }
 }
