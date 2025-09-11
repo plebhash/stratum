@@ -5,17 +5,14 @@ use roles_logic_sv2::{
     },
     handlers_sv2::{HandleCommonMessagesFromServerAsync, HandlerError},
 };
-use tracing::{error, info};
+use tracing::{info, warn};
 
 impl HandleCommonMessagesFromServerAsync for Upstream {
     async fn handle_setup_connection_error(
         &mut self,
         msg: SetupConnectionError<'_>,
     ) -> Result<(), HandlerError> {
-        error!(
-            "Received SetupConnectionError: version={}, flags={:b}",
-            msg.error_code, msg.flags
-        );
+        warn!("Received: {}", msg);
 
         todo!()
     }
@@ -24,10 +21,7 @@ impl HandleCommonMessagesFromServerAsync for Upstream {
         &mut self,
         msg: SetupConnectionSuccess,
     ) -> Result<(), HandlerError> {
-        info!(
-            "Received SetupConnectionSuccess: version={}, flags={:b}",
-            msg.used_version, msg.flags
-        );
+        info!("Received: {}", msg);
 
         Ok(())
     }
@@ -36,19 +30,13 @@ impl HandleCommonMessagesFromServerAsync for Upstream {
         &mut self,
         msg: ChannelEndpointChanged,
     ) -> Result<(), HandlerError> {
-        info!(
-            "Received `ChannelEndpointChanged`: channel_id: {}",
-            msg.channel_id
-        );
+        info!("Received: {}", msg);
 
         todo!()
     }
 
     async fn handle_reconnect(&mut self, msg: Reconnect<'_>) -> Result<(), HandlerError> {
-        info!(
-            "Received `Reconnect`: new_host: {}, new_port: {}",
-            msg.new_host, msg.new_port
-        );
+        info!("Received: {}", msg);
         todo!()
     }
 }
