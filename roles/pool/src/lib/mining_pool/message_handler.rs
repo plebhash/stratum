@@ -16,7 +16,11 @@ use stratum_common::roles_logic_sv2::{
         error::{ExtendedChannelError, StandardChannelError},
         extended::ExtendedChannel,
         group::GroupChannel,
-        jobs::job_store::DefaultJobStore,
+        jobs::{
+            extended::{DefaultExtendedJob, ExtendedJob},
+            job_store::DefaultJobStore,
+            standard::{DefaultStandardJob, StandardJob},
+        },
         share_accounting::{ShareValidationError, ShareValidationResult},
         standard::StandardChannel,
     },
@@ -100,7 +104,7 @@ impl ParseMiningMessagesFromDownstream<()> for Downstream {
             // we only create one group channel for all standard channels
 
             let group_channel_id = self.channel_id_factory.next();
-            let job_store = Box::new(DefaultJobStore::new());
+            let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
             let mut group_channel = GroupChannel::new_for_pool(
                 group_channel_id,
@@ -132,7 +136,7 @@ impl ParseMiningMessagesFromDownstream<()> for Downstream {
             .to_vec();
 
         let channel_id = self.channel_id_factory.next();
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultStandardJob<'static>> = DefaultJobStore::new();
         let mut standard_channel = match StandardChannel::new_for_pool(
             channel_id,
             user_identity,
@@ -314,7 +318,7 @@ impl ParseMiningMessagesFromDownstream<()> for Downstream {
         };
 
         let channel_id = self.channel_id_factory.next();
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
         let mut extended_channel = match ExtendedChannel::new_for_pool(
             channel_id,
             user_identity,

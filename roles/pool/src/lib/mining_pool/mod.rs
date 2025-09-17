@@ -43,7 +43,15 @@ use stratum_common::{
         self,
         bitcoin::{Amount, TxOut},
         channels_sv2::server::{
-            extended::ExtendedChannel, group::GroupChannel, standard::StandardChannel,
+            extended::ExtendedChannel,
+            group::GroupChannel,
+            jobs::{
+                extended::{DefaultExtendedJob, ExtendedJob},
+                job_store::DefaultJobStore,
+                standard::{DefaultStandardJob, StandardJob},
+                Job,
+            },
+            standard::StandardChannel,
         },
         codec_sv2::{
             self, binary_sv2::U256, HandshakeRole, Responder, StandardEitherFrame, StandardSv2Frame,
@@ -103,15 +111,53 @@ pub struct Downstream {
     extranonce_prefix_factory_extended: Arc<Mutex<ExtendedExtranonce>>,
     extranonce_prefix_factory_standard: Arc<Mutex<ExtendedExtranonce>>,
     // A map of all extended channels, keyed by their ID.
-    extended_channels: HashMap<u32, Arc<RwLock<ExtendedChannel<'static>>>>,
+    #[allow(clippy::type_complexity)]
+    extended_channels: HashMap<
+        u32,
+        Arc<
+            RwLock<
+                ExtendedChannel<
+                    'static,
+                    DefaultJobStore<DefaultExtendedJob<'static>>,
+                    DefaultStandardJob<'static>,
+                    DefaultExtendedJob<'static>,
+                >,
+            >,
+        >,
+    >,
     // A map of all standard channels, keyed by their ID.
-    standard_channels: HashMap<u32, Arc<RwLock<StandardChannel<'static>>>>,
+    #[allow(clippy::type_complexity)]
+    standard_channels: HashMap<
+        u32,
+        Arc<
+            RwLock<
+                StandardChannel<
+                    'static,
+                    DefaultJobStore<DefaultStandardJob<'static>>,
+                    DefaultStandardJob<'static>,
+                    DefaultExtendedJob<'static>,
+                >,
+            >,
+        >,
+    >,
     vardiff: HashMap<u32, Arc<RwLock<Box<dyn Vardiff>>>>,
     // naive approach:
     // we create one group channel for the connection
     // and add all standard channels to this same single group channel
     // (that is, only if SetupConnection.REQUIRES_STANDARD_JOBS flag is set)
-    group_channel: Option<Arc<RwLock<GroupChannel<'static>>>>,
+    #[allow(clippy::type_complexity)]
+    group_channel: Option<
+        Arc<
+            RwLock<
+                GroupChannel<
+                    'static,
+                    DefaultJobStore<DefaultExtendedJob<'static>>,
+                    DefaultStandardJob<'static>,
+                    DefaultExtendedJob<'static>,
+                >,
+            >,
+        >,
+    >,
     share_batch_size: usize,
     shares_per_minute: f32,
     last_future_template: NewTemplate<'static>,
@@ -1142,7 +1188,16 @@ async fn send_set_target_downstream(
 
 fn run_vardiff_on_extended_channel(
     channel_id: u32,
-    channel: Arc<RwLock<ExtendedChannel<'static>>>,
+    channel: Arc<
+        RwLock<
+            ExtendedChannel<
+                'static,
+                DefaultJobStore<DefaultExtendedJob<'static>>,
+                DefaultStandardJob<'static>,
+                DefaultExtendedJob<'static>,
+            >,
+        >,
+    >,
     vardiff_state: Arc<RwLock<Box<dyn Vardiff>>>,
     updates: &mut Vec<(u32, Target)>,
 ) {
@@ -1183,7 +1238,16 @@ fn run_vardiff_on_extended_channel(
 
 fn run_vardiff_on_standard_channel(
     channel_id: u32,
-    channel: Arc<RwLock<StandardChannel<'static>>>,
+    channel: Arc<
+        RwLock<
+            StandardChannel<
+                'static,
+                DefaultJobStore<DefaultStandardJob<'static>>,
+                DefaultStandardJob<'static>,
+                DefaultExtendedJob<'static>,
+            >,
+        >,
+    >,
     vardiff_state: &Arc<RwLock<Box<dyn Vardiff>>>,
     updates: &mut Vec<(u32, Target)>,
 ) {
