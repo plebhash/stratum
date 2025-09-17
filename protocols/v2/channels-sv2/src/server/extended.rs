@@ -45,10 +45,7 @@ use crate::{
     server::{
         error::ExtendedChannelError,
         jobs::{
-            extended::{DefaultExtendedJob, ExtendedJob},
-            factory::JobFactory,
-            job_store::JobStore,
-            standard::DefaultStandardJob,
+            extended::ExtendedJob, factory::JobFactory, job_store::JobStore, standard::StandardJob,
             Job, JobOrigin,
         },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
@@ -63,7 +60,7 @@ use bitcoin::{
     CompactTarget, Target as BitcoinTarget,
 };
 use mining_sv2::{SetCustomMiningJob, SubmitSharesExtended, Target, MAX_EXTRANONCE_LEN};
-use std::{collections::HashMap, convert::TryInto};
+use std::{collections::HashMap, convert::TryInto, marker::PhantomData};
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash as SetNewPrevHashTdp};
 use tracing::debug;
 
@@ -89,7 +86,12 @@ use tracing::debug;
 /// - the channel's job factory
 /// - the channel's chain tip
 #[derive(Debug)]
-pub struct ExtendedChannel<'a> {
+pub struct ExtendedChannel<'a, J, S, E>
+where
+    J: JobStore<E>,
+    S: Job + StandardJob<'a>,
+    E: Job + ExtendedJob<'a>,
+{
     channel_id: u32,
     user_identity: String,
     extranonce_prefix: Vec<u8>,
@@ -97,14 +99,20 @@ pub struct ExtendedChannel<'a> {
     requested_max_target: Target,
     target: Target, // todo: try to use Target from rust-bitcoin
     nominal_hashrate: f32,
-    job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
-    job_factory: JobFactory<DefaultStandardJob<'a>, DefaultExtendedJob<'a>>,
+    job_store: J,
+    job_factory: JobFactory<S, E>,
     share_accounting: ShareAccounting,
     expected_share_per_minute: f32,
     chain_tip: Option<ChainTip>,
+    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> ExtendedChannel<'a> {
+impl<'a, J, S, E> ExtendedChannel<'a, J, S, E>
+where
+    J: JobStore<E>,
+    S: Job + StandardJob<'a>,
+    E: Job + ExtendedJob<'a>,
+{
     /// Constructor of `ExtendedChannel` for a Sv2 Pool Server.
     /// Not meant for usage on a Sv2 Job Declaration Client.
     ///
@@ -126,7 +134,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+        job_store: J,
         pool_tag_string: String,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
@@ -166,7 +174,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+        job_store: J,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
     ) -> Result<Self, ExtendedChannelError> {
@@ -198,7 +206,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+        job_store: J,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
     ) -> Result<Self, ExtendedChannelError> {
@@ -235,6 +243,7 @@ impl<'a> ExtendedChannel<'a> {
             share_accounting: ShareAccounting::new(share_batch_size),
             expected_share_per_minute,
             chain_tip: None,
+            _phantom: PhantomData,
         })
     }
 
@@ -396,15 +405,15 @@ impl<'a> ExtendedChannel<'a> {
         Ok(())
     }
     /// Returns the currently active job, if any.
-    pub fn get_active_job(&self) -> Option<&DefaultExtendedJob<'a>> {
+    pub fn get_active_job(&self) -> Option<&E> {
         self.job_store.get_active_job()
     }
     /// Returns all future jobs for this channel.
-    pub fn get_future_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
+    pub fn get_future_jobs(&self) -> &HashMap<u32, E> {
         self.job_store.get_future_jobs()
     }
     /// Returns all past jobs for this channel.
-    pub fn get_past_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
+    pub fn get_past_jobs(&self) -> &HashMap<u32, E> {
         self.job_store.get_past_jobs()
     }
     /// Returns a reference to the share accounting state for this channel.
@@ -726,7 +735,12 @@ mod tests {
         server::{
             error::ExtendedChannelError,
             extended::ExtendedChannel,
-            jobs::{extended::ExtendedJob, job_store::DefaultJobStore, Job},
+            jobs::{
+                extended::{DefaultExtendedJob, ExtendedJob},
+                job_store::DefaultJobStore,
+                standard::DefaultStandardJob,
+                Job,
+            },
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
     };
@@ -756,9 +770,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -907,9 +926,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1027,9 +1051,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1106,9 +1135,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1216,9 +1250,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1329,9 +1368,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1452,13 +1496,18 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
 
         // this is the most permissive possible max_target
         let max_target: Target = [0xff; 32].into();
 
         // Create a channel with initial hashrate
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -1550,9 +1599,14 @@ mod tests {
         let version_rolling_allowed = true;
         let rollable_extranonce_size = (MAX_EXTRANONCE_LEN - extranonce_prefix.len()) as u16;
         let share_batch_size = 100;
-        let job_store = Box::new(DefaultJobStore::new());
+        let job_store = DefaultJobStore::new();
 
-        let mut channel = ExtendedChannel::new(
+        let mut channel: ExtendedChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = ExtendedChannel::new(
             channel_id,
             user_identity,
             extranonce_prefix.clone(),

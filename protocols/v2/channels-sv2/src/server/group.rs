@@ -36,15 +36,18 @@ use crate::{
     server::{
         error::GroupChannelError,
         jobs::{
-            extended::DefaultExtendedJob, factory::JobFactory, job_store::JobStore,
-            standard::DefaultStandardJob,
+            extended::ExtendedJob, factory::JobFactory, job_store::JobStore, standard::StandardJob,
+            Job,
         },
     },
 };
 use bitcoin::transaction::TxOut;
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash as SetNewPrevHashTdp};
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    marker::PhantomData,
+};
 
 /// Abstraction of a Group Channel.
 ///
@@ -62,15 +65,26 @@ use std::collections::{HashMap, HashSet};
 /// - the group channel's stale jobs
 /// - the group channel's share validation state
 #[derive(Debug)]
-pub struct GroupChannel<'a> {
+pub struct GroupChannel<'a, J, S, E>
+where
+    J: JobStore<E>,
+    S: Job + StandardJob<'a>,
+    E: Job + ExtendedJob<'a>,
+{
     group_channel_id: u32,
     standard_channel_ids: HashSet<u32>,
-    job_factory: JobFactory<DefaultStandardJob<'a>, DefaultExtendedJob<'a>>,
-    job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+    job_factory: JobFactory<S, E>,
+    job_store: J,
     chain_tip: Option<ChainTip>,
+    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> GroupChannel<'a> {
+impl<'a, J, S, E> GroupChannel<'a, J, S, E>
+where
+    J: JobStore<E>,
+    S: Job + StandardJob<'a>,
+    E: Job + ExtendedJob<'a>,
+{
     /// Constructor of `GroupChannel` for a Sv2 Pool Server.
     /// Not meant for usage on a Sv2 Job Declaration Client.
     ///
@@ -79,11 +93,7 @@ impl<'a> GroupChannel<'a> {
     ///
     /// For non-JD jobs, `pool_tag_string` is added to the coinbase scriptSig in between `/`
     /// and `//` delimiters: `/pool_tag_string//`
-    pub fn new_for_pool(
-        group_channel_id: u32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
-        pool_tag_string: String,
-    ) -> Self {
+    pub fn new_for_pool(group_channel_id: u32, job_store: J, pool_tag_string: String) -> Self {
         Self::new(group_channel_id, job_store, Some(pool_tag_string), None)
     }
 
@@ -99,7 +109,7 @@ impl<'a> GroupChannel<'a> {
     /// `/` delimiters: `/pool_tag_string/miner_tag_string/`
     pub fn new_for_job_declaration_client(
         group_channel_id: u32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+        job_store: J,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
     ) -> Self {
@@ -114,7 +124,7 @@ impl<'a> GroupChannel<'a> {
     // private constructor
     fn new(
         group_channel_id: u32,
-        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+        job_store: J,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
     ) -> Self {
@@ -124,6 +134,7 @@ impl<'a> GroupChannel<'a> {
             job_factory: JobFactory::new(true, pool_tag, miner_tag),
             job_store,
             chain_tip: None,
+            _phantom: PhantomData,
         }
     }
 
@@ -159,7 +170,7 @@ impl<'a> GroupChannel<'a> {
     }
 
     /// Returns the currently active job, if any.
-    pub fn get_active_job(&self) -> Option<&DefaultExtendedJob<'a>> {
+    pub fn get_active_job(&self) -> Option<&E> {
         self.job_store.get_active_job()
     }
 
@@ -169,7 +180,7 @@ impl<'a> GroupChannel<'a> {
     }
 
     /// Returns all future jobs for this group channel.
-    pub fn get_future_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
+    pub fn get_future_jobs(&self) -> &HashMap<u32, E> {
         self.job_store.get_future_jobs()
     }
 
@@ -261,7 +272,12 @@ mod tests {
         chain_tip::ChainTip,
         server::{
             group::GroupChannel,
-            jobs::{extended::ExtendedJob, job_store::DefaultJobStore, Job},
+            jobs::{
+                extended::{DefaultExtendedJob, ExtendedJob},
+                job_store::DefaultJobStore,
+                standard::DefaultStandardJob,
+                Job,
+            },
         },
     };
     use binary_sv2::Sv2Option;
@@ -278,8 +294,13 @@ mod tests {
         // the messages on this test were collected from a sane message flow
         // we use them as test vectors to assert correct behavior of job creation
         let group_channel_id = 1;
-        let job_store = Box::new(DefaultJobStore::new());
-        let mut group_channel = GroupChannel::new(group_channel_id, job_store, None, None);
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
+        let mut group_channel: GroupChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = GroupChannel::new(group_channel_id, job_store, None, None);
 
         let template = NewTemplate {
             template_id: 1,
@@ -405,8 +426,13 @@ mod tests {
         // we use them as test vectors to assert correct behavior of job creation
         let group_channel_id = 1;
 
-        let job_store = Box::new(DefaultJobStore::new());
-        let mut group_channel = GroupChannel::new(group_channel_id, job_store, None, None);
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
+        let mut group_channel: GroupChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = GroupChannel::new(group_channel_id, job_store, None, None);
 
         let ntime = 1746839905;
         let prev_hash = [
@@ -495,8 +521,13 @@ mod tests {
         // we use them as test vectors to assert correct behavior of job creation
         let group_channel_id = 1;
 
-        let job_store = Box::new(DefaultJobStore::new());
-        let mut group_channel = GroupChannel::new(group_channel_id, job_store, None, None);
+        let job_store: DefaultJobStore<DefaultExtendedJob<'static>> = DefaultJobStore::new();
+        let mut group_channel: GroupChannel<
+            'static,
+            DefaultJobStore<DefaultExtendedJob<'static>>,
+            DefaultStandardJob<'static>,
+            DefaultExtendedJob<'static>,
+        > = GroupChannel::new(group_channel_id, job_store, None, None);
 
         let template = NewTemplate {
             template_id: 1,
