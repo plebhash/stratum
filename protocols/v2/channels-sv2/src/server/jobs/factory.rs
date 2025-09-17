@@ -65,14 +65,16 @@ impl JobIdFactory {
 ///
 /// Enables creation of new Standard Jobs from NewTemplate messages.
 #[derive(Debug, Clone)]
-pub struct JobFactory {
+pub struct JobFactory<S, E> {
     job_id_factory: JobIdFactory,
     version_rolling_allowed: bool,
     pool_tag_string: Option<String>,
     miner_tag_string: Option<String>,
+    _phantom_std: std::marker::PhantomData<S>,
+    _phantom_ext: std::marker::PhantomData<E>,
 }
 
-impl JobFactory {
+impl<S, E> JobFactory<S, E> {
     /// Creates a new [`JobFactory`] instance.
     ///
     /// The `pool_tag_string` and `miner_tag_string` are optional and will be added to the coinbase
@@ -90,6 +92,8 @@ impl JobFactory {
             version_rolling_allowed,
             pool_tag_string,
             miner_tag_string,
+            _phantom_std: std::marker::PhantomData,
+            _phantom_ext: std::marker::PhantomData,
         }
     }
 
@@ -148,7 +152,10 @@ impl JobFactory {
         extranonce_prefix: Vec<u8>,
         template: NewTemplate<'a>,
         additional_coinbase_outputs: Vec<TxOut>,
-    ) -> Result<StandardJob<'a>, JobFactoryError> {
+    ) -> Result<S, JobFactoryError>
+    where
+        S: StandardJob<'a>,
+    {
         let coinbase_outputs_sum = additional_coinbase_outputs
             .iter()
             .map(|o| o.value.to_sat())
@@ -200,7 +207,7 @@ impl JobFactory {
             }
         };
 
-        let job = StandardJob::from_template(
+        let job = S::from_template(
             template,
             extranonce_prefix,
             additional_coinbase_outputs,
@@ -229,7 +236,10 @@ impl JobFactory {
         extranonce_prefix: Vec<u8>,
         template: NewTemplate<'a>,
         additional_coinbase_outputs: Vec<TxOut>,
-    ) -> Result<ExtendedJob<'a>, JobFactoryError> {
+    ) -> Result<E, JobFactoryError>
+    where
+        E: ExtendedJob<'a>,
+    {
         let coinbase_outputs_sum = additional_coinbase_outputs
             .iter()
             .map(|o| o.value.to_sat())
@@ -292,7 +302,7 @@ impl JobFactory {
             }
         };
 
-        let job = ExtendedJob::from_template(
+        let job = E::from_template(
             template,
             extranonce_prefix,
             additional_coinbase_outputs,
@@ -403,7 +413,10 @@ impl JobFactory {
         &mut self,
         set_custom_mining_job: SetCustomMiningJob<'a>,
         extranonce_prefix: Vec<u8>,
-    ) -> Result<ExtendedJob<'a>, JobFactoryError> {
+    ) -> Result<E, JobFactoryError>
+    where
+        E: ExtendedJob<'a>,
+    {
         let serialized_outputs = set_custom_mining_job
             .coinbase_tx_outputs
             .inner_as_ref()
@@ -444,7 +457,7 @@ impl JobFactory {
             merkle_path,
         };
 
-        let job = ExtendedJob::from_custom_job(
+        let job = E::from_custom_job(
             set_custom_mining_job,
             extranonce_prefix,
             coinbase_outputs,
@@ -458,7 +471,7 @@ impl JobFactory {
 }
 
 // impl block with private methods
-impl JobFactory {
+impl<SJ, EJ> JobFactory<SJ, EJ> {
     // build a coinbase transaction from a SetCustomMiningJob
     // this is only used to extract coinbase_tx_prefix and coinbase_tx_suffix from the custom
     // coinbase
@@ -657,12 +670,14 @@ impl JobFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::jobs::{extended::DefaultExtendedJob, standard::DefaultStandardJob};
     use bitcoin::ScriptBuf;
     use template_distribution_sv2::NewTemplate;
 
     #[test]
     fn test_new_pool_job() {
-        let mut job_factory = JobFactory::new(true, Some("Stratum V2 SRI Pool".to_string()), None);
+        let mut job_factory: JobFactory<DefaultStandardJob, DefaultExtendedJob> =
+            JobFactory::new(true, Some("Stratum V2 SRI Pool".to_string()), None);
 
         // note:
         // the messages on this test were collected from a sane message flow
@@ -752,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_new_extended_job_from_custom_job() {
-        let jdc_job_factory = JobFactory::new(
+        let jdc_job_factory: JobFactory<DefaultStandardJob, DefaultExtendedJob> = JobFactory::new(
             true,
             Some("Stratum V2 SRI Pool".to_string()),
             Some("Stratum V2 SRI Miner".to_string()),
@@ -820,7 +835,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut pool_job_factory =
+        let mut pool_job_factory: JobFactory<DefaultStandardJob, DefaultExtendedJob> =
             JobFactory::new(true, Some("Stratum V2 SRI Pool".to_string()), None);
 
         let custom_job = pool_job_factory

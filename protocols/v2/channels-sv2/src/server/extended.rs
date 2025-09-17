@@ -44,7 +44,13 @@ use crate::{
     merkle_root::merkle_root_from_path,
     server::{
         error::ExtendedChannelError,
-        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore, JobOrigin},
+        jobs::{
+            extended::{DefaultExtendedJob, ExtendedJob},
+            factory::JobFactory,
+            job_store::JobStore,
+            standard::DefaultStandardJob,
+            Job, JobOrigin,
+        },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
     target::{bytes_to_hex, hash_rate_to_target, target_to_difficulty, u256_to_block_hash},
@@ -91,8 +97,8 @@ pub struct ExtendedChannel<'a> {
     requested_max_target: Target,
     target: Target, // todo: try to use Target from rust-bitcoin
     nominal_hashrate: f32,
-    job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
-    job_factory: JobFactory,
+    job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
+    job_factory: JobFactory<DefaultStandardJob<'a>, DefaultExtendedJob<'a>>,
     share_accounting: ShareAccounting,
     expected_share_per_minute: f32,
     chain_tip: Option<ChainTip>,
@@ -120,7 +126,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag_string: String,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
@@ -160,7 +166,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
     ) -> Result<Self, ExtendedChannelError> {
@@ -192,7 +198,7 @@ impl<'a> ExtendedChannel<'a> {
         requested_min_rollable_extranonce_size: u16,
         share_batch_size: usize,
         expected_share_per_minute: f32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
     ) -> Result<Self, ExtendedChannelError> {
@@ -390,15 +396,15 @@ impl<'a> ExtendedChannel<'a> {
         Ok(())
     }
     /// Returns the currently active job, if any.
-    pub fn get_active_job(&self) -> Option<&ExtendedJob<'a>> {
+    pub fn get_active_job(&self) -> Option<&DefaultExtendedJob<'a>> {
         self.job_store.get_active_job()
     }
     /// Returns all future jobs for this channel.
-    pub fn get_future_jobs(&self) -> &HashMap<u32, ExtendedJob<'a>> {
+    pub fn get_future_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
         self.job_store.get_future_jobs()
     }
     /// Returns all past jobs for this channel.
-    pub fn get_past_jobs(&self) -> &HashMap<u32, ExtendedJob<'a>> {
+    pub fn get_past_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
         self.job_store.get_past_jobs()
     }
     /// Returns a reference to the share accounting state for this channel.
@@ -720,7 +726,7 @@ mod tests {
         server::{
             error::ExtendedChannelError,
             extended::ExtendedChannel,
-            jobs::job_store::DefaultJobStore,
+            jobs::{extended::ExtendedJob, job_store::DefaultJobStore, Job},
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
     };

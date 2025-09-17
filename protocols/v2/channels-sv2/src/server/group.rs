@@ -35,7 +35,10 @@ use crate::{
     chain_tip::ChainTip,
     server::{
         error::GroupChannelError,
-        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore},
+        jobs::{
+            extended::DefaultExtendedJob, factory::JobFactory, job_store::JobStore,
+            standard::DefaultStandardJob,
+        },
     },
 };
 use bitcoin::transaction::TxOut;
@@ -62,8 +65,8 @@ use std::collections::{HashMap, HashSet};
 pub struct GroupChannel<'a> {
     group_channel_id: u32,
     standard_channel_ids: HashSet<u32>,
-    job_factory: JobFactory,
-    job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+    job_factory: JobFactory<DefaultStandardJob<'a>, DefaultExtendedJob<'a>>,
+    job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
     chain_tip: Option<ChainTip>,
 }
 
@@ -78,7 +81,7 @@ impl<'a> GroupChannel<'a> {
     /// and `//` delimiters: `/pool_tag_string//`
     pub fn new_for_pool(
         group_channel_id: u32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag_string: String,
     ) -> Self {
         Self::new(group_channel_id, job_store, Some(pool_tag_string), None)
@@ -96,7 +99,7 @@ impl<'a> GroupChannel<'a> {
     /// `/` delimiters: `/pool_tag_string/miner_tag_string/`
     pub fn new_for_job_declaration_client(
         group_channel_id: u32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
     ) -> Self {
@@ -111,7 +114,7 @@ impl<'a> GroupChannel<'a> {
     // private constructor
     fn new(
         group_channel_id: u32,
-        job_store: Box<dyn JobStore<ExtendedJob<'a>>>,
+        job_store: Box<dyn JobStore<DefaultExtendedJob<'a>>>,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
     ) -> Self {
@@ -156,7 +159,7 @@ impl<'a> GroupChannel<'a> {
     }
 
     /// Returns the currently active job, if any.
-    pub fn get_active_job(&self) -> Option<&ExtendedJob<'a>> {
+    pub fn get_active_job(&self) -> Option<&DefaultExtendedJob<'a>> {
         self.job_store.get_active_job()
     }
 
@@ -166,7 +169,7 @@ impl<'a> GroupChannel<'a> {
     }
 
     /// Returns all future jobs for this group channel.
-    pub fn get_future_jobs(&self) -> &HashMap<u32, ExtendedJob<'a>> {
+    pub fn get_future_jobs(&self) -> &HashMap<u32, DefaultExtendedJob<'a>> {
         self.job_store.get_future_jobs()
     }
 
@@ -256,7 +259,10 @@ impl<'a> GroupChannel<'a> {
 mod tests {
     use crate::{
         chain_tip::ChainTip,
-        server::{group::GroupChannel, jobs::job_store::DefaultJobStore},
+        server::{
+            group::GroupChannel,
+            jobs::{extended::ExtendedJob, job_store::DefaultJobStore, Job},
+        },
     };
     use binary_sv2::Sv2Option;
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf};
