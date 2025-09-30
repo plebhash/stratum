@@ -78,6 +78,7 @@ pub enum JDCError {
     TxDataError,
     FrameConversionError,
     FailedToCreateCustomJob,
+    ExtranonceSizeTooLarge,
 }
 
 impl std::error::Error for JDCError {}
@@ -154,6 +155,9 @@ impl fmt::Display for JDCError {
             }
             FailedToCreateCustomJob => {
                 write!(f, "failed to create custom job")
+            }
+            ExtranonceSizeTooLarge => {
+                write!(f, "Extranonce size too large")
             }
         }
     }
