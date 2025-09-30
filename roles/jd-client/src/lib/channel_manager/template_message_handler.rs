@@ -104,7 +104,8 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                                     let request_id = channel_manager_data.request_id_factory.next();
                                     let output = deserialize_coinbase_outputs(&channel_manager_data.coinbase_outputs);
                                     let job_factory = channel_manager_data.job_factory.as_mut().unwrap();
-                                    let custom_job = job_factory.new_custom_job(upstream_channel.get_channel_id(), request_id, token.clone().mining_job_token, prevhash.clone().into(), msg.clone(), output);
+                                    let full_extranonce_size = upstream_channel.get_full_extranonce_size();
+                                    let custom_job = job_factory.new_custom_job(upstream_channel.get_channel_id(), request_id, token.clone().mining_job_token, prevhash.clone().into(), msg.clone(), output, full_extranonce_size);
 
                                     if let Ok(custom_job) = custom_job{
                                         let last_declare = DeclaredJob {
@@ -324,8 +325,18 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
             let mut output = deserialize_coinbase_outputs(&data.coinbase_outputs);
             output[0].value = Amount::from_sat(template_message.coinbase_tx_value_remaining);
 
-            if let Ok((coinbase_tx_prefix, coinbase_tx_suffix)) =
-                job_factory.new_coinbase_tx_prefix_and_suffix(template_message.clone(), output)
+            let full_extranonce_size = data
+                .upstream_channel
+                .as_ref()
+                .map(|channel| channel.get_full_extranonce_size())
+                .unwrap_or(32);
+
+            if let Ok((coinbase_tx_prefix, coinbase_tx_suffix)) = job_factory
+                .new_coinbase_tx_prefix_and_suffix(
+                    template_message.clone(),
+                    output,
+                    full_extranonce_size,
+                )
             {
                 let version = template_message.version;
 
@@ -445,6 +456,8 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                         );
                         let outputs = deserialize_coinbase_outputs(&data.coinbase_outputs);
 
+                        let full_extranonce_size = upstream_channel.get_full_extranonce_size();
+
                         if let Ok(custom_job) = job_factory.new_custom_job(
                             upstream_channel.get_channel_id(),
                             request_id,
@@ -452,6 +465,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                             chain_tip,
                             template.clone(),
                             outputs,
+                            full_extranonce_size,
                         ) {
                             let last_declare = DeclaredJob {
                                 declare_mining_job: None,

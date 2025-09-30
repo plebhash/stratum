@@ -173,6 +173,7 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
                 let job_factory = channel_manager_data.job_factory.as_mut()?;
                 let upstream_channel = channel_manager_data.upstream_channel.as_ref()?;
                 let output = deserialize_coinbase_outputs(&last_declare_job.coinbase_output);
+                let full_extranonce_size = upstream_channel.get_full_extranonce_size();
                 let custom_job = job_factory.new_custom_job(
                     upstream_channel.get_channel_id(),
                     msg.request_id,
@@ -180,6 +181,7 @@ impl HandleJobDeclarationMessagesFromServerAsync for ChannelManager {
                     prevhash.into(),
                     last_declare_job.template,
                     output,
+                    full_extranonce_size,
                 );
                 Some(custom_job)
             })
