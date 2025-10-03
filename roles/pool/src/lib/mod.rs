@@ -68,7 +68,7 @@ impl PoolSv2 {
 
         debug!("Channels initialized.");
 
-        let channel_manager = ChannelManager::new(
+        let mut channel_manager = ChannelManager::new(
             self.config.clone(),
             channel_manager_to_tp_sender.clone(),
             tp_to_channel_manager_receiver.clone(),
@@ -77,8 +77,6 @@ impl PoolSv2 {
             encoded_outputs.clone(),
         )
         .await?;
-
-        let channel_manager_clone = channel_manager.clone();
 
         // Initialize the template Receiver
         let tp_address = self.config.tp_address().to_string();
@@ -115,7 +113,7 @@ impl PoolSv2 {
             )
             .await?;
 
-        channel_manager_clone
+        channel_manager
             .start_downstream_server(
                 *self.config.authority_public_key(),
                 *self.config.authority_secret_key(),

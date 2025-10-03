@@ -150,7 +150,7 @@ impl ChannelManager {
     /// Starts the downstream server, and accepts new connection request.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_downstream_server(
-        self,
+        &mut self,
         authority_public_key: Secp256k1PublicKey,
         authority_secret_key: Secp256k1SecretKey,
         cert_validity_sec: u64,
@@ -161,6 +161,7 @@ impl ChannelManager {
         channel_manager_sender: Sender<(u32, Mining<'static>)>,
         channel_manager_receiver: broadcast::Sender<(u32, Mining<'static>)>,
     ) -> PoolResult<()> {
+        let self_clone = self.clone();
         info!("Starting downstream server at {listening_address}");
         let server = TcpListener::bind(listening_address).await.map_err(|e| {
             error!(error = ?e, "Failed to bind downstream server at {listening_address}");
@@ -215,7 +216,7 @@ impl ChannelManager {
                                     }
                                 };
 
-                                let downstream_id = self
+                                let downstream_id = self_clone
                                     .channel_manager_data
                                     .super_safe_lock(|data| data.downstream_id_factory.next());
 
@@ -231,7 +232,7 @@ impl ChannelManager {
                                 );
 
 
-                                self.channel_manager_data.super_safe_lock(|data| {
+                                self_clone.channel_manager_data.super_safe_lock(|data| {
                                     data.downstream.insert(downstream_id, downstream.clone());
                                 });
 
@@ -262,17 +263,18 @@ impl ChannelManager {
     /// and either forwarding them to the appropriate subsystem or updating  
     /// the internal state of the Channel Manager as needed.
     pub async fn start(
-        mut self,
+        &mut self,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) -> PoolResult<()> {
+        let mut self_clone = self.clone();
         let status_sender = StatusSender::ChannelManager(status_sender);
         let mut shutdown_rx = notify_shutdown.subscribe();
 
         task_manager.spawn(async move {
-            let cm = self.clone();
-            let vd = self.clone();
+            let cm = self_clone.clone();
+            let vd = self_clone.clone();
             let vardiff_future = vd.run_vardiff_loop();
             tokio::pin!(vardiff_future);
             loop {
@@ -287,7 +289,7 @@ impl ChannelManager {
                             }
                             Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
                                 info!(%downstream_id, "Channel Manager: removing downstream after shutdown");
-                                if let Err(e) = self.remove_downstream(downstream_id) {
+                                if let Err(e) = self_clone.remove_downstream(downstream_id) {
                                     tracing::error!(%downstream_id, error = ?e, "Failed to remove downstream");
                                 }
                             }
