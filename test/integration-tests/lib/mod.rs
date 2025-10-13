@@ -53,7 +53,7 @@ pub fn start_sniffer(
     timeout: Option<u64>,
 ) -> (Sniffer<'_>, SocketAddr) {
     let listening_address = get_available_address();
-    let sniffer = Sniffer::new(
+    let mut sniffer = Sniffer::new(
         identifier,
         listening_address,
         upstream,

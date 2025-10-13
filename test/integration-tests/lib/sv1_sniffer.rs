@@ -5,6 +5,7 @@ use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use stratum_common::network_helpers_sv2::sv1_connection::ConnectionSV1;
 use tokio::{
     net::{TcpListener, TcpStream},
+    runtime::Runtime,
     select,
     sync::Mutex,
 };
@@ -26,6 +27,7 @@ pub struct SnifferSV1 {
     upstream_address: SocketAddr,
     messages_from_downstream: MessagesAggregatorSV1,
     messages_from_upstream: MessagesAggregatorSV1,
+    runtime: Option<Runtime>,
 }
 
 impl SnifferSV1 {
@@ -40,6 +42,7 @@ impl SnifferSV1 {
             upstream_address,
             messages_from_downstream: MessagesAggregatorSV1::new(),
             messages_from_upstream: MessagesAggregatorSV1::new(),
+            runtime: None,
         }
     }
 
@@ -49,7 +52,8 @@ impl SnifferSV1 {
         let listening_address = self.listening_address.clone();
         let messages_from_downstream = self.messages_from_downstream.clone();
         let messages_from_upstream = self.messages_from_upstream.clone();
-        tokio::spawn(async move {
+        let runtime = Runtime::new().unwrap();
+        runtime.spawn(async move {
             let listener = TcpListener::bind(listening_address)
                 .await
                 .expect("Failed to listen on given address");
@@ -82,6 +86,7 @@ impl SnifferSV1 {
                 ) => { },
             };
         });
+        self.runtime = Some(runtime);
     }
 
     /// Wait for a specific message to be received from the downstream role.
@@ -145,6 +150,14 @@ impl SnifferSV1 {
             tracing::info!("🔍 Sv1 Sniffer | Direction: ⬆ | Forwarded: {}", msg);
         }
         Err(SnifferError::DownstreamClosed)
+    }
+}
+
+impl Drop for SnifferSV1 {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 

@@ -9,11 +9,12 @@ use stratum_common::roles_logic_sv2::{
     codec_sv2::{StandardEitherFrame, Sv2Frame},
     parsers_sv2::AnyMessage,
 };
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, runtime::Runtime};
 
 pub struct MockDownstream {
     upstream_address: SocketAddr,
     messages_from_upstream: MessagesAggregator,
+    runtime: Option<Runtime>,
 }
 
 impl MockDownstream {
@@ -21,10 +22,11 @@ impl MockDownstream {
         Self {
             upstream_address,
             messages_from_upstream: MessagesAggregator::new(),
+            runtime: None,
         }
     }
 
-    pub async fn start(&self) -> Sender<MessageFrame> {
+    pub async fn start(&mut self) -> Sender<MessageFrame> {
         let upstream_address = self.upstream_address;
         let (upstream_receiver, upstream_sender) = create_upstream(loop {
             match TcpStream::connect(upstream_address).await {
@@ -37,17 +39,27 @@ impl MockDownstream {
         .await
         .expect("Failed to create upstream");
         let messages_from_upstream = self.messages_from_upstream.clone();
-        tokio::spawn(async move {
+        let runtime = Runtime::new().unwrap();
+        runtime.spawn(async move {
             while let Ok(mut frame) = upstream_receiver.recv().await {
                 let (msg_type, msg) = message_from_frame(&mut frame);
                 messages_from_upstream.add_message(msg_type, msg);
             }
         });
+        self.runtime = Some(runtime);
         upstream_sender
     }
 
     pub fn next_message_from_upstream(&self) -> Option<(MsgType, AnyMessage<'static>)> {
         self.messages_from_upstream.next_message()
+    }
+}
+
+impl Drop for MockDownstream {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -57,6 +69,7 @@ pub struct MockUpstream {
     // First item in tuple refer to the message(MsgType) received and second to what
     // response(AnyMessage) should the upstream send back.
     response_messages: Vec<(MsgType, AnyMessage<'static>)>,
+    runtime: Option<Runtime>,
 }
 
 impl MockUpstream {
@@ -68,14 +81,16 @@ impl MockUpstream {
             listening_address,
             messages_from_dowsntream: MessagesAggregator::new(),
             response_messages,
+            runtime: None,
         }
     }
 
-    pub async fn start(&self) {
+    pub async fn start(&mut self) {
         let listening_address = self.listening_address;
         let messages_from_dowsntream = self.messages_from_dowsntream.clone();
         let response_messages = self.response_messages.clone();
-        tokio::spawn(async move {
+        let runtime = Runtime::new().unwrap();
+        runtime.spawn(async move {
             let (downstream_receiver, downstream_sender) =
                 create_downstream(wait_for_client(listening_address).await)
                     .await
@@ -98,10 +113,19 @@ impl MockUpstream {
                 }
             }
         });
+        self.runtime = Some(runtime);
     }
 
     pub fn next_message_from_downstream(&self) -> Option<(MsgType, AnyMessage<'static>)> {
         self.messages_from_dowsntream.next_message()
+    }
+}
+
+impl Drop for MockUpstream {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -119,7 +143,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_downstream() {
         let (_tp, socket) = start_template_provider(None, DifficultyLevel::Low);
-        let mock_downstream = MockDownstream::new(socket);
+        let mut mock_downstream = MockDownstream::new(socket);
         let send_to_upstream = mock_downstream.start().await;
         let setup_connection =
             AnyMessage::Common(CommonMessages::SetupConnection(SetupConnection {
@@ -152,7 +176,7 @@ mod tests {
             .unwrap()
             .port();
         let upstream_socket_addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let mock_downstream = MockDownstream::new(upstream_socket_addr);
+        let mut mock_downstream = MockDownstream::new(upstream_socket_addr);
         let upon_receiving_setup_connection = MESSAGE_TYPE_SETUP_CONNECTION;
         let respond_with_success = AnyMessage::Common(CommonMessages::SetupConnectionSuccess(
             SetupConnectionSuccess {
@@ -160,7 +184,7 @@ mod tests {
                 flags: 0,
             },
         ));
-        let mock_upstream = MockUpstream::new(
+        let mut mock_upstream = MockUpstream::new(
             upstream_socket_addr,
             vec![(upon_receiving_setup_connection, respond_with_success)],
         );

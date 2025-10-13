@@ -9,7 +9,7 @@ use crate::{
 };
 use std::net::SocketAddr;
 use stratum_common::roles_logic_sv2::parsers_sv2::{message_type_to_name, AnyMessage};
-use tokio::{net::TcpStream, select};
+use tokio::{net::TcpStream, runtime::Runtime, select};
 
 const DEFAULT_TIMEOUT: u64 = 60;
 
@@ -34,7 +34,7 @@ const DEFAULT_TIMEOUT: u64 = 60;
 ///
 /// In order to replace or ignore the messages sent between the roles, [`InterceptAction`] can be
 /// used in [`Sniffer::new`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Sniffer<'a> {
     identifier: &'a str,
     listening_address: SocketAddr,
@@ -44,6 +44,7 @@ pub struct Sniffer<'a> {
     check_on_drop: bool,
     action: Vec<InterceptAction>,
     timeout: Option<u64>,
+    runtime: Option<Runtime>,
 }
 
 impl<'a> Sniffer<'a> {
@@ -66,6 +67,7 @@ impl<'a> Sniffer<'a> {
             check_on_drop,
             action,
             timeout,
+            runtime: None,
         }
     }
 
@@ -73,14 +75,16 @@ impl<'a> Sniffer<'a> {
     ///
     /// The sniffer should be started after the upstream role have been initialized and is ready to
     /// accept messages and before the downstream role starts sending messages.
-    pub fn start(&self) {
+    pub fn start(&mut self) {
         let listening_address = self.listening_address;
         let upstream_address = self.upstream_address;
         let messages_from_downstream = self.messages_from_downstream.clone();
         let messages_from_upstream = self.messages_from_upstream.clone();
         let action = self.action.clone();
         let identifier = self.identifier.to_string();
-        tokio::spawn(async move {
+
+        let runtime = Runtime::new().unwrap();
+        runtime.spawn(async move {
             let (downstream_receiver, downstream_sender) =
                 create_downstream(wait_for_client(listening_address).await)
                     .await
@@ -98,6 +102,8 @@ impl<'a> Sniffer<'a> {
                 _ = recv_from_up_send_to_down(upstream_receiver, downstream_sender, messages_from_upstream, action, &identifier) => { },
             };
         });
+
+        self.runtime = Some(runtime);
     }
 
     /// Returns the oldest message sent by downstream.
@@ -353,6 +359,12 @@ macro_rules! assert_jd_message {
 // This is useful to ensure that the test has checked all exchanged messages between the roles.
 impl Drop for Sniffer<'_> {
     fn drop(&mut self) {
+        // Properly shutdown the runtime to avoid the "Cannot drop a runtime in a context where
+        // blocking is not allowed" error
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+
         if self.check_on_drop {
             match (
                 self.messages_from_downstream.is_empty(),

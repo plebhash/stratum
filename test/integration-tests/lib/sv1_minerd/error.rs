@@ -23,6 +23,10 @@ pub enum MinerdError {
     MutexPoisoned,
     /// OS or Architecture not supported
     OsArchNotSupported(String),
+    /// Runtime creation failed
+    RuntimeCreationFailed(tokio::io::Error),
+    /// Runtime is not running
+    RuntimeNotRunning,
 }
 
 impl fmt::Display for MinerdError {
@@ -42,6 +46,8 @@ impl fmt::Display for MinerdError {
             MinerdError::OsArchNotSupported(msg) => {
                 write!(f, "OS or architecture not supported: {}", msg)
             }
+            MinerdError::RuntimeCreationFailed(e) => write!(f, "Runtime creation failed: {}", e),
+            MinerdError::RuntimeNotRunning => write!(f, "Runtime is not running"),
         }
     }
 }
@@ -59,6 +65,8 @@ impl std::error::Error for MinerdError {
             | MinerdError::HashrateParseError
             | MinerdError::MutexPoisoned => None,
             MinerdError::OsArchNotSupported(_) => None,
+            MinerdError::RuntimeCreationFailed(_) => None,
+            MinerdError::RuntimeNotRunning => None,
         }
     }
 }

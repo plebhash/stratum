@@ -8,6 +8,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     process::{Child as TokioChild, Command as TokioCommand},
+    runtime::Runtime,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
@@ -56,6 +57,8 @@ pub struct MinerdProcess {
     single_submit: bool,
     /// Cancellation token to coordinate shutdown of all tasks
     cancellation_token: CancellationToken,
+    /// Dedicated runtime for the minerd process
+    runtime: Option<Runtime>,
 }
 
 impl MinerdProcess {
@@ -100,6 +103,8 @@ impl MinerdProcess {
             .map_err(MinerdError::ProxySetup)?;
         let local_address = listener.local_addr().map_err(MinerdError::ProxySetup)?;
 
+        let runtime = Runtime::new().map_err(MinerdError::RuntimeCreationFailed)?;
+
         Ok(MinerdProcess {
             minerd_binary,
             process: Arc::new(Mutex::new(None)),
@@ -107,6 +112,7 @@ impl MinerdProcess {
             upstream_address,
             single_submit,
             cancellation_token: CancellationToken::new(),
+            runtime: Some(runtime),
         })
     }
 
@@ -126,14 +132,6 @@ impl MinerdProcess {
         username: Option<String>,
         password: Option<String>,
     ) -> Result<(), MinerdError> {
-        let mut process_guard = self
-            .process
-            .lock()
-            .map_err(|_| MinerdError::MutexPoisoned)?;
-        if process_guard.is_some() {
-            return Err(MinerdError::ProcessAlreadyRunning);
-        }
-
         let mut cmd = TokioCommand::new(&self.minerd_binary);
 
         // Kill the process on drop
@@ -166,9 +164,27 @@ impl MinerdProcess {
 
         info!("Spawning minerd with command: {:?}", cmd);
 
-        let child = cmd.spawn().map_err(MinerdError::ProcessSpawn)?;
+        // Use the dedicated runtime to spawn the process
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or(MinerdError::RuntimeNotRunning)?;
+        let child = runtime
+            .spawn_blocking(move || cmd.spawn())
+            .await
+            .map_err(|e| MinerdError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+            .map_err(MinerdError::ProcessSpawn)?;
+
+        let mut process_guard = self
+            .process
+            .lock()
+            .map_err(|_| MinerdError::MutexPoisoned)?;
+        if process_guard.is_some() {
+            return Err(MinerdError::ProcessAlreadyRunning);
+        }
+
         *process_guard = Some(child);
-        info!("minerd process spawned successfully");
+        info!("minerd process spawned successfully on dedicated runtime");
         Ok(())
     }
 
@@ -181,8 +197,12 @@ impl MinerdProcess {
         let single_submit = self.single_submit;
         let process = Arc::clone(&self.process);
         let cancellation_token = self.cancellation_token.clone();
-
-        tokio::spawn(async move {
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or(MinerdError::RuntimeNotRunning)?;
+        let runtime_handle = runtime.handle().clone();
+        runtime.spawn(async move {
             info!("Proxy server started, waiting for connections...");
 
             loop {
@@ -205,7 +225,7 @@ impl MinerdProcess {
 
                                         // Task for downstream -> upstream (minerd -> pool)
                                         if single_submit {
-                                            tokio::spawn(async move {
+                                            runtime_handle.spawn(async move {
                                                 let _ = Self::proxy_tcp_data_single_submit(
                                                     downstream_read,
                                                     upstream_write,
@@ -214,7 +234,7 @@ impl MinerdProcess {
                                                 ).await;
                                             });
                                         } else {
-                                            tokio::spawn(async move {
+                                            runtime_handle.spawn(async move {
                                                 let _ = Self::proxy_tcp_data(
                                                     downstream_read,
                                                     upstream_write,
@@ -224,7 +244,7 @@ impl MinerdProcess {
                                         }
 
                                         // Task for upstream -> downstream (pool -> minerd)
-                                        tokio::spawn(async move {
+                                        runtime_handle.spawn(async move {
                                             let _ = Self::proxy_tcp_data(
                                                 upstream_read,
                                                 downstream_write,
@@ -468,6 +488,12 @@ impl Drop for MinerdProcess {
     fn drop(&mut self) {
         // Trigger cancellation to signal all tasks to stop
         self.cancellation_token.cancel();
+
+        // Properly shutdown the runtime to avoid the "Cannot drop a runtime in a context where
+        // blocking is not allowed" error
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
 
         match self.process.lock() {
             Ok(mut process_guard) => {
