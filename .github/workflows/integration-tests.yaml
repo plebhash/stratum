@@ -1,33 +1,54 @@
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited ]
     branches:
       - main
+    workflow_dispatch:
 
 name: Integration Tests
 
 jobs:
   ci:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Use stable toolchain
-        uses: actions/checkout@v4
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - name: Detect companion line
+        id: detect
+        run: |
+          BODY_NEW="${{ github.event.pull_request.body }}"
+          BODY_OLD="${{ github.event.changes.body.from || '' }}"
+
+          # Extract companion from old body (only available for edited events)
+          OLD_COMPANION=$(echo "$BODY_OLD" \
+            | grep -Eo 'companion https://github\.com/stratum-mining/sv2-apps/pull/[0-9]+' \
+            || true)
+
+          # Extract companion from new body
+          NEW_COMPANION=$(echo "$BODY_NEW" \
+            | grep -Eo 'companion https://github\.com/stratum-mining/sv2-apps/pull/[0-9]+' \
+            || true)
+
+          # Detect change ONLY on edited events
+          if [ "${{ github.event.action }}" = "edited" ]; then
+              if [ "$OLD_COMPANION" != "$NEW_COMPANION" ]; then
+                echo "should_run_integration_test=true" >> $GITHUB_OUTPUT
+              else
+                echo "should_run_integration_test=false" >> $GITHUB_OUTPUT
+              fi
+          else
+              echo "should_run_integration_test=true" >> $GITHUB_OUTPUT
+          fi
+
+          # Extract PR number always
+          COMPANION_NUM=$(echo "$NEW_COMPANION" | grep -Eo '[0-9]+$' || true)
+          echo "COMPANION_PR_NUMBER=${COMPANION_NUM:-}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
 
       - name: Install capnproto
-        run: |
-          sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+        if: steps.detect.outputs.should_run_integration_test == 'true'
+        run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
 
       - name: Run Integration Tests Script
-        run: |
-          ./scripts/run-integration-tests.sh
+        if: steps.detect.outputs.should_run_integration_test == 'true'
+        run: ./scripts/run-integration-tests.sh
