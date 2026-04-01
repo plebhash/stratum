@@ -1,11 +1,8 @@
 extern crate alloc;
 
+use crate::bip141::try_strip_bip141;
 use alloc::vec::Vec;
-use bitcoin::{
-    consensus,
-    hashes::{sha256d::Hash as DHash, Hash},
-    Transaction,
-};
+use bitcoin::hashes::{sha256d::Hash as DHash, Hash};
 use tracing::error;
 
 /// Computes the Merkle root from coinbase transaction components and a path of transaction hashes.
@@ -27,22 +24,28 @@ pub fn merkle_root_from_path<T: AsRef<[u8]>>(
     extranonce: &[u8],
     path: &[T],
 ) -> Option<Vec<u8>> {
+    let (coinbase_tx_prefix, coinbase_tx_suffix) =
+        match try_strip_bip141(coinbase_tx_prefix, coinbase_tx_suffix) {
+            Ok(Some((coinbase_tx_prefix_stripped, coinbase_tx_suffix_stripped))) => {
+                (coinbase_tx_prefix_stripped, coinbase_tx_suffix_stripped)
+            }
+            Ok(None) => (coinbase_tx_prefix.to_vec(), coinbase_tx_suffix.to_vec()),
+            Err(e) => {
+                error!("ERROR: {:?}", e);
+                return None;
+            }
+        };
+
     let mut coinbase =
         Vec::with_capacity(coinbase_tx_prefix.len() + coinbase_tx_suffix.len() + extranonce.len());
-    coinbase.extend_from_slice(coinbase_tx_prefix);
+    coinbase.extend_from_slice(&coinbase_tx_prefix);
     coinbase.extend_from_slice(extranonce);
-    coinbase.extend_from_slice(coinbase_tx_suffix);
-    let coinbase: Transaction = match consensus::deserialize(&coinbase[..]) {
-        Ok(trans) => trans,
-        Err(e) => {
-            error!("ERROR: {}", e);
-            return None;
-        }
-    };
+    coinbase.extend_from_slice(&coinbase_tx_suffix);
 
-    let coinbase_id: [u8; 32] = *coinbase.compute_txid().as_ref();
+    // sha256d hash of the raw coinbase transaction
+    let coinbase_txid: [u8; 32] = *DHash::hash(&coinbase).as_ref();
 
-    Some(merkle_root_from_path_(coinbase_id, path).to_vec())
+    Some(merkle_root_from_path_(coinbase_txid, path).to_vec())
 }
 
 /// Computes the Merkle root from a validated coinbase transaction and a path of transaction
