@@ -32,14 +32,28 @@ pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 /// malicious template-distribution peer streaming non-future templates while withholding
 /// `SetNewPrevHash`.
 ///
-/// 50 buys ample headroom over the reachable submit depth (a miner abandons a job once the next
-/// one arrives, so late shares realistically target the last 1-2 jobs) at a small measured
-/// memory cost — see the load-test data in PR #2290.
+/// The cap is really a retention *window* — `cap / job rate` — so the count a deployment needs
+/// depends on how fast new jobs replace the active one, which this crate cannot see. Hardware
+/// measurement bounded the requirement at **~16 s of retention**, and 16 is that window at one job
+/// per second, the fastest rate a pool's own job production can be configured for. The miner A/B
+/// runs and the production share-age survey behind that bound are in the comments on
+/// [PR #2307](https://github.com/stratum-mining/stratum/pull/2307).
 ///
-/// This is only the default. The cap is really a retention window — `cap / job rate` — and the
-/// job rate belongs to the deployment, so channel constructors accept a `max_past_jobs`
-/// override and fall back to this value when given `None` or `Some(0)`.
-pub(crate) const MAX_PAST_JOBS: usize = 50;
+/// Operators who know their own job interval `T` should set `ceil(16 s / T)` and reclaim the
+/// memory: 3 at a typical 6 s interval costs 13.5 kB per channel against 72 kB for 16.
+///
+/// On a channel that accepts `SetCustomMiningJob` that shortcut does not apply, because the job
+/// rate is the client's rather than the pool's: every accepted custom job retires the active one,
+/// so a pool producing its own jobs slowly can still be driven fast by a client that declares
+/// often. Size the cap against the rate at which the pool lets custom jobs be committed — one
+/// permitted per second needs the full 16, however long the pool's own job interval is. A pool
+/// that does not rate-limit `SetCustomMiningJob` has no rate to size against: no finite cap
+/// guarantees the window there, the cap is only a memory bound, and the default should stand.
+///
+/// Channel constructors accept a `max_past_jobs` override, falling back to this value on
+/// `None`/`Some(0)`. See [PR #2290](https://github.com/stratum-mining/stratum/pull/2290) for the
+/// memory cost.
+pub(crate) const MAX_PAST_JOBS: usize = 16;
 
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///

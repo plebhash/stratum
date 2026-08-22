@@ -30,14 +30,27 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 /// though it would otherwise have been accepted and propagated — a bounded loss of creditable
 /// work, the price of bounding memory under a hostile upstream.
 ///
-/// 50 matches the server-side cap, so a proxy's client channel never evicts a job its upstream
-/// still accepts, and buys ample headroom over the reachable submit depth of ~1-2 past jobs at a
-/// small measured memory cost — see the load-test data in PR #2290.
+/// Matches the server-side default, so a proxy's client channel never evicts a job its upstream
+/// still accepts. A client retaining more than its upstream gains nothing: the proxy credits the
+/// share locally and the upstream rejects it anyway.
 ///
-/// This is only the default. The cap is really a retention window — `cap / job rate` — and the
-/// job rate belongs to the deployment, so channel constructors take a
-/// `max_past_jobs: Option<usize>` and fall back to this value when passed `None` or `Some(0)`.
-pub const MAX_PAST_JOBS: usize = 50;
+/// The cap is really a retention *window* — `cap / job rate` — so the count a deployment needs
+/// depends on how fast the upstream sends new jobs, which this crate cannot see. Hardware
+/// measurement bounded the requirement at **~16 s of retention**, and 16 is that window at one job
+/// per second, the fastest rate an upstream's own job production can be configured for. The miner
+/// A/B runs and the production share-age survey behind that bound are in the comments on
+/// [PR #2307](https://github.com/stratum-mining/stratum/pull/2307).
+///
+/// Operators who know their upstream's job interval `T` should set `ceil(16 s / T)` and reclaim
+/// the memory: 3 at a typical 6 s interval costs 13.5 kB per channel against 72 kB for 16. That
+/// matters most on a translator, where every downstream miner holds its own client channel. On a
+/// job-declaration client the upstream channel's job rate is instead the client's own
+/// `SetCustomMiningJob` rate, which it does know.
+///
+/// Channel constructors accept a `max_past_jobs` override, falling back to this value on
+/// `None`/`Some(0)`. See [PR #2290](https://github.com/stratum-mining/stratum/pull/2290) for the
+/// memory cost.
+pub const MAX_PAST_JOBS: usize = 16;
 
 /// Maximum number of accepted-share hashes a client channel retains for duplicate detection.
 ///
