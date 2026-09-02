@@ -108,6 +108,8 @@ impl ExtendedChannel {
     ///
     /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
     /// `Some(0)` both select [`MAX_PAST_JOBS`].
+    ///
+    /// Returns [`ExtendedChannelError::InvalidTarget`] if `target` is zero.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: u32,
@@ -118,7 +120,11 @@ impl ExtendedChannel {
         version_rolling: bool,
         rollable_extranonce_size: u16,
         max_past_jobs: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, ExtendedChannelError> {
+        if target == Target::ZERO {
+            return Err(ExtendedChannelError::InvalidTarget);
+        }
+
         // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
         // would otherwise evict the just-retired job and reject the most common late share
         let max_past_jobs = match max_past_jobs {
@@ -126,7 +132,7 @@ impl ExtendedChannel {
             _ => MAX_PAST_JOBS,
         };
 
-        Self {
+        Ok(Self {
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -144,7 +150,7 @@ impl ExtendedChannel {
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
             retired_extranonce_prefixes: RetiredExtranoncePrefixes::default(),
-        }
+        })
     }
 
     /// Returns the unique `channel_id` of this channel.
@@ -248,11 +254,20 @@ impl ExtendedChannel {
     /// empty `min_ntime` (i.e. queued future jobs), so their associated target is refreshed here.
     /// Jobs that were already received with a set `min_ntime` (active, past and stale jobs) keep
     /// their target.
-    pub fn set_target(&mut self, new_target: Target) {
+    ///
+    /// Returns [`ExtendedChannelError::InvalidTarget`] if `new_target` is zero, leaving the
+    /// channel unchanged.
+    pub fn set_target(&mut self, new_target: Target) -> Result<(), ExtendedChannelError> {
+        if new_target == Target::ZERO {
+            return Err(ExtendedChannelError::InvalidTarget);
+        }
+
         self.target = new_target;
         for future_job in self.future_jobs.values_mut() {
             future_job.2 = new_target;
         }
+
+        Ok(())
     }
 
     /// Returns the cumulative nominal hashrate for the channel, in h/s.
@@ -960,7 +975,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1042,7 +1058,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id,
@@ -1103,7 +1120,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id,
@@ -1183,7 +1201,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let active_job = NewExtendedMiningJob {
             channel_id,
@@ -1249,7 +1268,8 @@ mod tests {
             true,
             4u16,
             Some(custom_cap),
-        );
+        )
+        .unwrap();
 
         let active_job = NewExtendedMiningJob {
             channel_id,
@@ -1303,7 +1323,8 @@ mod tests {
             true,
             4u16,
             Some(0),
-        );
+        )
+        .unwrap();
         for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
             let mut job = active_job.clone();
             job.job_id = job_id;
@@ -1335,7 +1356,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let ntime: u32 = 1746839905;
         let active_job = NewExtendedMiningJob {
@@ -1417,7 +1439,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1517,7 +1540,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1607,7 +1631,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1703,7 +1728,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1812,7 +1838,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1909,7 +1936,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2020,7 +2048,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2111,7 +2140,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2211,7 +2241,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2249,7 +2280,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x50, 0x00, 0x00,
         ]);
-        channel.set_target(new_target);
+        channel.set_target(new_target).unwrap();
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
         let nbits: u32 = 453040064;
@@ -2308,7 +2339,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         // a non-future job is activated immediately
         let active_job = NewExtendedMiningJob {
@@ -2374,7 +2406,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job_template = NewExtendedMiningJob {
             channel_id,
@@ -2466,7 +2499,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job_template = NewExtendedMiningJob {
             channel_id,
@@ -2588,7 +2622,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job = |job_id: u32, min_ntime: Option<u32>| NewExtendedMiningJob {
             channel_id,
@@ -2692,7 +2727,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         channel
             .on_new_extended_mining_job(NewExtendedMiningJob {
@@ -2782,7 +2818,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job = |min_ntime: Option<u32>| NewExtendedMiningJob {
             channel_id,
@@ -2904,7 +2941,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = |job_id: u32| NewExtendedMiningJob {
             channel_id,
@@ -3027,7 +3065,8 @@ mod tests {
             true,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         // an immediately-active job, created under the first prefix
         channel
@@ -3129,7 +3168,8 @@ mod tests {
             true,
             rollable_extranonce_size,
             Some(1),
-        );
+        )
+        .unwrap();
 
         // job 1 under the first prefix, then a rotation onto a wire prefix and job 2 under it
         channel
@@ -3157,5 +3197,53 @@ mod tests {
             allocator_1.allocate_extended(8),
             Err(ExtranonceAllocatorError::CapacityExhausted)
         ));
+    }
+
+    #[test]
+    fn test_zero_target_is_rejected() {
+        // a zero target is refused at construction and on SetTarget, leaving the channel
+        // unchanged (see InvalidTarget)
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let res = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix.clone()).unwrap(),
+            Target::ZERO,
+            1.0,
+            true,
+            8u16,
+            None,
+        );
+        assert!(matches!(res, Err(ExtendedChannelError::InvalidTarget)));
+
+        let target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            target,
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        // a queued future job, whose target a SetTarget would otherwise refresh
+        let mut future_job = active_job_template(1);
+        future_job.min_ntime = Sv2Option::new(None);
+        channel.on_new_extended_mining_job(future_job).unwrap();
+
+        assert!(matches!(
+            channel.set_target(Target::ZERO),
+            Err(ExtendedChannelError::InvalidTarget)
+        ));
+        assert_eq!(channel.get_target(), &target);
+        assert_eq!(channel.get_future_job(1).unwrap().2, target);
     }
 }

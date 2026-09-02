@@ -95,6 +95,8 @@ impl StandardChannel {
     ///
     /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
     /// `Some(0)` both select [`MAX_PAST_JOBS`].
+    ///
+    /// Returns [`StandardChannelError::InvalidTarget`] if `target` is zero.
     pub fn new(
         channel_id: u32,
         user_identity: String,
@@ -102,7 +104,11 @@ impl StandardChannel {
         target: Target,
         nominal_hashrate: f32,
         max_past_jobs: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, StandardChannelError> {
+        if target == Target::ZERO {
+            return Err(StandardChannelError::InvalidTarget);
+        }
+
         // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
         // would otherwise evict the just-retired job and reject the most common late share
         let max_past_jobs = match max_past_jobs {
@@ -110,7 +116,7 @@ impl StandardChannel {
             _ => MAX_PAST_JOBS,
         };
 
-        Self {
+        Ok(Self {
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -126,7 +132,7 @@ impl StandardChannel {
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
             retired_extranonce_prefixes: RetiredExtranoncePrefixes::default(),
-        }
+        })
     }
 
     /// Returns the channel ID.
@@ -214,11 +220,20 @@ impl StandardChannel {
     /// empty `min_ntime` (i.e. queued future jobs), so their associated target is refreshed here.
     /// Jobs that were already received with a set `min_ntime` (active, past and stale jobs) keep
     /// their target.
-    pub fn set_target(&mut self, target: Target) {
+    ///
+    /// Returns [`StandardChannelError::InvalidTarget`] if `target` is zero, leaving the channel
+    /// unchanged.
+    pub fn set_target(&mut self, target: Target) -> Result<(), StandardChannelError> {
+        if target == Target::ZERO {
+            return Err(StandardChannelError::InvalidTarget);
+        }
+
         self.target = target;
         for future_job in self.future_jobs.values_mut() {
             future_job.2 = target;
         }
+
+        Ok(())
     }
 
     /// Returns the nominal hashrate of the channel in h/s.
@@ -710,7 +725,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -775,7 +791,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -822,7 +839,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -891,7 +909,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             Some(custom_cap),
-        );
+        )
+        .unwrap();
 
         let active_job = NewMiningJob {
             channel_id,
@@ -931,7 +950,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             Some(0),
-        );
+        )
+        .unwrap();
         for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
             let mut job = active_job.clone();
             job.job_id = job_id;
@@ -956,7 +976,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let active_job = NewMiningJob {
             channel_id,
@@ -1007,7 +1028,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let ntime: u32 = 1746839905;
         let active_job = NewMiningJob {
@@ -1070,7 +1092,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1151,7 +1174,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1222,7 +1246,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1299,7 +1324,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1371,7 +1397,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1453,7 +1480,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1534,7 +1562,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewMiningJob {
             channel_id,
@@ -1557,7 +1586,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x50, 0x00, 0x00,
         ]);
-        channel.set_target(new_target);
+        channel.set_target(new_target).unwrap();
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
         let nbits = 453040064;
@@ -1614,7 +1643,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let merkle_root = [
             189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84, 56,
@@ -1696,7 +1726,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let merkle_root = [
             189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84, 56,
@@ -1767,7 +1798,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let merkle_root = [
             189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84, 56,
@@ -1876,7 +1908,8 @@ mod tests {
             target,
             nominal_hashrate,
             None,
-        );
+        )
+        .unwrap();
 
         let malformed_job = NewExtendedMiningJob {
             channel_id,
@@ -1919,7 +1952,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         channel.on_new_mining_job(NewMiningJob {
             channel_id,
@@ -1991,7 +2025,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         let job = |min_ntime: Option<u32>| NewMiningJob {
             channel_id,
@@ -2110,7 +2145,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             None,
-        );
+        )
+        .unwrap();
 
         // an immediately-active job, created under the first prefix
         channel.on_new_mining_job(job_template(1, Some(1745596970)));
@@ -2213,7 +2249,8 @@ mod tests {
             Target::from_le_bytes([0xff; 32]),
             1.0,
             Some(1),
-        );
+        )
+        .unwrap();
 
         // job 1 under the first prefix, then a rotation onto a wire prefix and job 2 under it
         channel.on_new_mining_job(job_template(1, Some(1745596970)));
@@ -2235,5 +2272,48 @@ mod tests {
             allocator_1.allocate_standard(),
             Err(ExtranonceAllocatorError::CapacityExhausted)
         ));
+    }
+
+    #[test]
+    fn test_zero_target_is_rejected() {
+        // a zero target is refused at construction and on SetTarget, leaving the channel
+        // unchanged (see InvalidTarget)
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let res = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix.clone()).unwrap(),
+            Target::ZERO,
+            1.0,
+            None,
+        );
+        assert!(matches!(res, Err(StandardChannelError::InvalidTarget)));
+
+        let target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            target,
+            1.0,
+            None,
+        )
+        .unwrap();
+
+        // a queued future job, whose target a SetTarget would otherwise refresh
+        channel.on_new_mining_job(job_template(1, None));
+
+        assert!(matches!(
+            channel.set_target(Target::ZERO),
+            Err(StandardChannelError::InvalidTarget)
+        ));
+        assert_eq!(channel.get_target(), &target);
+        assert_eq!(channel.get_future_job(1).unwrap().2, target);
     }
 }
