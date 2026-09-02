@@ -114,9 +114,13 @@ impl StandardJob {
     pub fn get_version(&self) -> u32 {
         self.job_message.version
     }
+    /// Returns the minimum ntime for this job (if set).
+    pub fn get_min_ntime(&self) -> Option<u32> {
+        self.job_message.min_ntime.as_ref().copied()
+    }
     /// Returns true if the job is a future job (not yet activated).
     pub fn is_future(&self) -> bool {
-        self.job_message.min_ntime.clone().into_inner().is_none()
+        self.get_min_ntime().is_none()
     }
     /// Activates the job by setting the minimum ntime field.
     ///

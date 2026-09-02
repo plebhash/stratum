@@ -654,7 +654,9 @@ impl StandardChannel {
     ///
     /// Returns the result of share validation, including block found, valid share, duplicate, or
     /// error if the share is stale, does not meet target, or has ntime outside
-    /// `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]` relative to the chain tip (see
+    /// `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]`, where `min_ntime` is the referenced
+    /// job's: the chain tip's for jobs built or activated under it, and the group job's own for
+    /// jobs installed via [`on_group_channel_job`](Self::on_group_channel_job) (see
     /// [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
     /// elapsed-time window).
     pub fn validate_share(
@@ -731,7 +733,17 @@ impl StandardChannel {
         let prev_hash = chain_tip.prev_hash();
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
 
-        if share.ntime < chain_tip.min_ntime() {
+        // the share's ntime is bounded by the min_ntime of the job it references: a job built
+        // by this channel takes it from the chain tip at creation, a future job receives it from
+        // the SetNewPrevHash that activates it, and a job installed via on_group_channel_job
+        // carries the group job's own, which differs from this channel's tip if the application
+        // fans the group job out before updating the tip. Every active or past job carries one:
+        // a job without it is a future job, which is never mined on.
+        let job_min_ntime = job
+            .get_min_ntime()
+            .expect("active and past jobs carry a min_ntime");
+
+        if share.ntime < job_min_ntime {
             self.share_accounting
                 .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
             return Err(ShareValidationError::Invalid(
@@ -739,9 +751,10 @@ impl StandardChannel {
             ));
         }
 
-        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
-        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
-        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at the
+        // receipt of the message that supplied min_ntime, since this crate has no clock (see
+        // MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > job_min_ntime.saturating_add(MAX_FUTURE_BLOCK_TIME) {
             self.share_accounting
                 .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
             return Err(ShareValidationError::Invalid(
@@ -2806,5 +2819,126 @@ mod tests {
             res.unwrap_err(),
             ShareValidationError::SeenSharesBudgetExhausted
         ));
+    }
+
+    #[test]
+    fn test_share_validation_ntime_below_group_job_min_ntime() {
+        // A job installed via on_group_channel_job carries the group job's own min_ntime, which
+        // is later than this channel's tip if the application fans the group job out before
+        // updating the channel's chain tip. A share in the gap
+        // (chain_tip.min_ntime <= ntime < job.min_ntime) must be rejected.
+        let standard_channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix.clone()).unwrap(),
+            max_target,
+            1.0,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // permissive channel target, so that acceptance only hinges on the nTime bounds
+        standard_channel.set_target(max_target);
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let n_bits = 453040064;
+        let prev_hash: binary_sv2::U256Owned = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let tip_ntime = 1745596910;
+        standard_channel.set_chain_tip(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime));
+
+        // the group channel had already advanced to a later tip when it built this job
+        let job_min_ntime = tip_ntime + 3;
+        let mut group_job_factory = crate::server::jobs::factory::JobFactory::new(true, None, None);
+        let group_job = group_job_factory
+            .new_extended_job(
+                99,
+                Some(ChainTip::new(prev_hash, n_bits, job_min_ntime)),
+                vec![],
+                template,
+                coinbase_reward_outputs,
+                extranonce_prefix.len(),
+            )
+            .unwrap();
+        assert_eq!(group_job.get_min_ntime(), Some(job_min_ntime));
+        standard_channel.on_group_channel_job(group_job).unwrap();
+        let job_id = standard_channel.get_active_job().unwrap().get_job_id();
+
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number,
+            job_id,
+            nonce: 0,
+            ntime,
+            version: 536870912,
+        };
+
+        // a share in the gap (at or above the tip's min_ntime, below the job's) is rejected
+        let res = standard_channel.validate_share(share(0, job_min_ntime - 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+        assert_eq!(
+            standard_channel
+                .get_share_accounting()
+                .get_shares_accepted(),
+            0
+        );
+
+        // the upper bound is anchored at the job's min_ntime as well: one second past it is
+        // rejected, exactly on it is accepted
+        let res = standard_channel
+            .validate_share(share(2, job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME + 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+        let res =
+            standard_channel.validate_share(share(3, job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+
+        // at the job's min_ntime the share is accepted (channel target is permissive)
+        let res = standard_channel.validate_share(share(1, job_min_ntime));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
     }
 }
