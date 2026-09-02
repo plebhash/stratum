@@ -48,7 +48,11 @@ pub type StandardJob = (NewMiningJobOwned, Target);
 /// - active mining job
 /// - past jobs (active jobs under current chain tip, indexed by job_id, capped at
 ///   [`MAX_PAST_JOBS`])
-/// - stale jobs (jobs from previous chain tip, indexed by job_id)
+/// - stale jobs (jobs from previous chain tip, indexed by job_id). Upstream job IDs carry no
+///   uniqueness guarantee, so a job may be installed under an ID a stale job holds; an ID names
+///   either a live job or a stale one, never both, and the stale namesake is dropped. A late
+///   share for it is then validated against the live job, as the channel cannot tell the two
+///   apart.
 /// - share accounting state
 /// - chain tip state
 #[derive(Debug)]
@@ -341,6 +345,8 @@ impl StandardChannel {
                 if let Some(active_job) = self.active_job.take() {
                     self.retire_job_to_past(active_job);
                 }
+                // an ID names either a live job or a stale one, never both
+                self.stale_jobs.remove(&new_mining_job.job_id);
                 self.active_job = Some((new_mining_job, self.target));
             }
             None => {
@@ -400,6 +406,10 @@ impl StandardChannel {
             self.stale_jobs
                 .insert(previously_active_job.0.job_id, previously_active_job);
         }
+
+        // the activated job may reuse the ID of a job that just went stale; an ID names either
+        // a live job or a stale one, never both
+        self.stale_jobs.remove(&set_new_prev_hash.job_id);
 
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
@@ -1869,5 +1879,107 @@ mod tests {
         // exactly on the bound the share is accepted (channel target is permissive)
         let res = channel.validate_share(share(2, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME));
         assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_reused_job_id_resolves_to_the_live_job() {
+        // Upstream job IDs carry no uniqueness guarantee: a job may be installed under the ID of
+        // a job that went stale, both when a future job is activated and when an immediately-
+        // active job arrives. An ID names either a live job or a stale one, never both, so the
+        // stale namesake is dropped and shares for the ID validate against the live job.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            None,
+        );
+
+        let job = |min_ntime: Option<u32>| NewMiningJob {
+            channel_id,
+            job_id: 1,
+            merkle_root: [
+                189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84,
+                56, 86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+            ]
+            .into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(min_ntime),
+        };
+
+        // job 1 is active under the current tip, and upstream reuses its ID for the next tip's
+        // future job
+        channel.on_new_mining_job(job(Some(1745596970)));
+        channel.on_new_mining_job(job(None));
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: 1745596980,
+            })
+            .unwrap();
+
+        // ID 1 names the activated job only: its displaced namesake is gone from the stale set
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert!(channel.get_stale_job(1).is_none());
+        assert_eq!(channel.get_stale_jobs_count(), 0);
+
+        // a share for the live job is validated (channel target is permissive)
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 3,
+            ntime,
+            version: 536870912,
+        };
+        assert!(matches!(
+            channel.validate_share(share(0, 1745596980)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // job 1 goes stale on the next tip transition, and upstream then reuses its ID for an
+        // immediately-active job
+        let mut future_job = job(None);
+        future_job.job_id = 2;
+        channel.on_new_mining_job(future_job);
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 2,
+                prev_hash: [
+                    154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107,
+                    73, 34, 0, 162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: 1745596990,
+            })
+            .unwrap();
+        assert!(channel.get_stale_job(1).is_some());
+        channel.on_new_mining_job(job(Some(1745596990)));
+
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert!(channel.get_stale_job(1).is_none());
+        assert!(matches!(
+            channel.validate_share(share(1, 1745596990)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
     }
 }
