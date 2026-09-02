@@ -373,8 +373,8 @@ impl StandardChannel {
     /// - Clears all future jobs.
     /// - Marks the previously active job and all past jobs as stale (they are no longer valid for
     ///   share propagation).
-    /// - Clears past jobs and the set of seen shares (to avoid memory growth and stale share
-    ///   submissions).
+    /// - Clears past jobs, and the set of seen shares if `prev_hash` changed (a repeated
+    ///   `prev_hash` keeps them, see [`ShareAccounting::flush_seen_shares`]).
     /// - Updates chain tip information. Returns error if no matching future job found, leaving
     ///   channel state untouched.
     pub fn on_set_new_prev_hash(
@@ -415,8 +415,14 @@ impl StandardChannel {
         self.past_jobs.clear();
         self.past_job_order.clear();
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|chain_tip| chain_tip.prev_hash() != set_new_prev_hash.prev_hash)
+        {
+            self.share_accounting.flush_seen_shares();
+        }
 
         self.chain_tip = Some(set_new_prev_hash.into());
 

@@ -542,8 +542,14 @@ impl ExtendedChannel {
     /// - Retires the previously active job as stale, leaving the channel with no active job until
     ///   the next job message arrives.
     /// - Marks all past jobs as stale and clears them.
-    /// - Clears all seen shares as shares for the previous chain tip will be rejected as stale.
+    /// - Clears all seen shares if `prev_hash` changed, as shares for the previous chain tip will
+    ///   be rejected as stale; a repeated `prev_hash` keeps them, see
+    ///   [`ShareAccounting::flush_seen_shares`].
     pub fn on_chain_tip_update(&mut self, chain_tip: ChainTip) -> Result<(), ExtendedChannelError> {
+        let is_new_prev_hash = self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|previous| previous.prev_hash() != chain_tip.prev_hash());
         self.chain_tip = Some(chain_tip);
 
         // all other future jobs are now useless
@@ -567,8 +573,10 @@ impl ExtendedChannel {
         self.past_jobs.clear();
         self.past_job_order.clear();
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if is_new_prev_hash {
+            self.share_accounting.flush_seen_shares();
+        }
 
         Ok(())
     }
@@ -581,7 +589,9 @@ impl ExtendedChannel {
     ///   untouched.
     /// - If it is a future job, activates it as the current job.
     /// - Marks the previously active job and all past jobs as stale, and clears past jobs.
-    /// - Clears all seen shares as shares for the previous chain tip will be rejected as stale.
+    /// - Clears all seen shares if `prev_hash` changed, as shares for the previous chain tip will
+    ///   be rejected as stale; a repeated `prev_hash` keeps them, see
+    ///   [`ShareAccounting::flush_seen_shares`].
     /// - Updates the chain tip for the channel.
     pub fn on_set_new_prev_hash(
         &mut self,
@@ -623,8 +633,14 @@ impl ExtendedChannel {
         self.past_jobs.clear();
         self.past_job_order.clear();
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|chain_tip| chain_tip.prev_hash() != set_new_prev_hash.prev_hash)
+        {
+            self.share_accounting.flush_seen_shares();
+        }
 
         self.chain_tip = Some(set_new_prev_hash.into());
 
@@ -2803,5 +2819,96 @@ mod tests {
             channel.validate_share(share(1, 1745596990)),
             Ok(ShareValidationResult::Valid(_))
         ));
+    }
+
+    #[test]
+    fn test_repeated_prev_hash_keeps_seen_shares() {
+        // Job IDs are not committed into the block header, so a non-conforming upstream can send
+        // an identical future job under a new job_id and repeat the same SetNewPrevHash. The
+        // replacement job commits to the same headers as the previous one, so the
+        // validated-share hashes must survive the repeated tip or the same proof is validated
+        // (and forwarded) again under the new job_id.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        );
+
+        let future_job = |job_id: u32| NewExtendedMiningJob {
+            channel_id,
+            job_id,
+            min_ntime: Sv2Option::new(None),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let set_new_prev_hash = |job_id: u32| SetNewPrevHashMp {
+            channel_id,
+            job_id,
+            prev_hash: [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            nbits: 453040064,
+            min_ntime: 1745596970,
+        };
+
+        let share = |sequence_number: u32, job_id: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id,
+            nonce: 0,
+            ntime: 1745596971,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+
+        channel.on_new_extended_mining_job(future_job(1)).unwrap();
+        channel.on_set_new_prev_hash(set_new_prev_hash(1)).unwrap();
+        assert!(matches!(
+            channel.validate_share(share(0, 1)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // the upstream repeats the tip under a new job_id: same header space, new job
+        channel.on_new_extended_mining_job(future_job(2)).unwrap();
+        channel.on_set_new_prev_hash(set_new_prev_hash(2)).unwrap();
+
+        // the identical proof under the new job_id is a duplicate, not a second validation
+        assert!(matches!(
+            channel.validate_share(share(1, 2)),
+            Err(ShareValidationError::DuplicateShare(_))
+        ));
+        assert_eq!(channel.get_share_accounting().get_validated_shares(), 1);
     }
 }

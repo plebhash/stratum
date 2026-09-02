@@ -593,6 +593,9 @@ impl StandardChannel {
     /// against a dead tip. The active job (if any) is marked stale and the chain tip is updated.
     ///
     /// All past jobs are cleared.
+    ///
+    /// Accepted-share hashes are flushed only if `prev_hash` actually changed: a repeated tip
+    /// commits to the same header space, see [`ShareAccounting::flush_seen_shares`].
     pub fn on_set_new_prev_hash(
         &mut self,
         set_new_prev_hash: SetNewPrevHash,
@@ -641,8 +644,14 @@ impl StandardChannel {
             }
         }
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|chain_tip| chain_tip.prev_hash() != set_new_prev_hash.prev_hash)
+        {
+            self.share_accounting.flush_seen_shares();
+        }
 
         // update the chain tip
         self.chain_tip = Some(set_new_prev_hash.into());
@@ -2940,5 +2949,132 @@ mod tests {
         // at the job's min_ntime the share is accepted (channel target is permissive)
         let res = standard_channel.validate_share(share(1, job_min_ntime));
         assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_repeated_prev_hash_keeps_seen_shares() {
+        // Template and job IDs are not committed into the block header, so a non-conforming
+        // Template Provider can queue an identical future template under a new template_id and
+        // repeat the same SetNewPrevHash. The replacement job commits to the same headers as
+        // the previous one, so the accepted-share hashes must survive the repeated tip or the
+        // same proof becomes creditable again under the new job_id.
+        let standard_channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            max_target,
+            1.0,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // permissive channel target, so that the share is accepted under both jobs
+        standard_channel.set_target(max_target);
+
+        let template = |template_id: u64| NewTemplate {
+            template_id,
+            future_template: true,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let prev_hash: binary_sv2::U256Owned = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let set_new_prev_hash = |template_id: u64| SetNewPrevHashTdp {
+            template_id,
+            prev_hash: prev_hash.clone(),
+            header_timestamp: 1745596910,
+            n_bits: 453040064,
+            target: [0xff; 32].into(),
+        };
+
+        standard_channel
+            .on_new_template(template(1), coinbase_reward_outputs.clone())
+            .unwrap();
+        standard_channel
+            .on_set_new_prev_hash(set_new_prev_hash(1))
+            .unwrap();
+        let first_job_id = standard_channel.get_active_job().unwrap().get_job_id();
+
+        let share = |sequence_number: u32, job_id: u32| SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number,
+            job_id,
+            nonce: 0,
+            ntime: 1745596910,
+            version: 536870912,
+        };
+        assert!(matches!(
+            standard_channel.validate_share(share(0, first_job_id)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // the peer repeats the tip under a new template_id: same header space, new job_id
+        standard_channel
+            .on_new_template(template(2), coinbase_reward_outputs)
+            .unwrap();
+        standard_channel
+            .on_set_new_prev_hash(set_new_prev_hash(2))
+            .unwrap();
+        let second_job_id = standard_channel.get_active_job().unwrap().get_job_id();
+        assert_ne!(first_job_id, second_job_id);
+        assert_eq!(
+            standard_channel.get_active_job().unwrap().get_merkle_root(),
+            standard_channel
+                .get_stale_job(first_job_id)
+                .unwrap()
+                .get_merkle_root()
+        );
+
+        // the identical proof under the new job_id is a duplicate, not a second credit
+        assert!(matches!(
+            standard_channel.validate_share(share(1, second_job_id)),
+            Err(ShareValidationError::DuplicateShare(_))
+        ));
+        assert_eq!(
+            standard_channel
+                .get_share_accounting()
+                .get_shares_accepted(),
+            1
+        );
     }
 }
