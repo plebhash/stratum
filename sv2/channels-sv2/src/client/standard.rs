@@ -417,11 +417,11 @@ impl StandardChannel {
     ///
     /// - Checks if the share refers to an active or past job; rejects stale jobs.
     /// - Verifies the share meets the channel target, is not a duplicate, is not stale, and has
-    ///   `ntime` >= the chain tip's `min_ntime` as well as the job's own `min_ntime` (an
-    ///   immediately-active job may carry a `min_ntime` later than the chain tip's minimum, so
-    ///   the effective lower bound is the larger of the two). Also rejects `ntime` above the
-    ///   chain tip's `min_ntime + MAX_FUTURE_BLOCK_TIME` (see [`MAX_FUTURE_BLOCK_TIME`] for how
-    ///   this clockless upper bound relates to the spec's elapsed-time window).
+    ///   `ntime` within `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]`, where `min_ntime` is
+    ///   the referenced job's: the `SetNewPrevHash` timestamp for a job activated from the
+    ///   future queue, or the value its own message advertised for an immediately-active job
+    ///   (see [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the
+    ///   spec's elapsed-time window).
     /// - Updates share accounting state based on validation result.
     /// - Returns whether the share is valid or resulted in a block being found.
     /// - Returns error describing why share is not valid.
@@ -469,29 +469,31 @@ impl StandardChannel {
         let prev_hash = chain_tip.prev_hash();
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
 
-        if share.ntime < chain_tip.min_ntime() {
+        // the share's ntime is bounded by the min_ntime of the job it references: a job
+        // activated from the future queue carries the SetNewPrevHash timestamp that activated
+        // it (which is also the chain tip's), an immediately-active job the value its own
+        // message advertised. Every active or past job carries one: a job without it is a
+        // future job, which is never mined on.
+        let job_min_ntime = job
+            .0
+            .min_ntime
+            .as_ref()
+            .copied()
+            .expect("active and past jobs carry a min_ntime");
+
+        if share.ntime < job_min_ntime {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
         }
 
-        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
-        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
-        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at the
+        // receipt of the message that supplied min_ntime, since this crate has no clock (see
+        // MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > job_min_ntime.saturating_add(MAX_FUTURE_BLOCK_TIME) {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
-        }
-
-        // an immediately-active job carries its own min_ntime, which may be later than the
-        // chain tip's minimum; jobs activated from the future queue have it overwritten with
-        // the SetNewPrevHash timestamp, making this check redundant there (and harmless)
-        if let Some(job_min_ntime) = job.0.min_ntime.clone().into_inner() {
-            if share.ntime < job_min_ntime {
-                return Err(ShareValidationError::Invalid(
-                    ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
-                ));
-            }
         }
 
         // Only the non-rollable version bits are compared: `!VERSION_ROLLING_MASK` zeroes
@@ -1706,7 +1708,7 @@ mod tests {
             min_ntime: Sv2Option::new(Some(job_min_ntime)),
         });
 
-        // a share in the gap passes the chain-tip bound but not the job's own bound
+        // a share in the gap (at or above the tip's min_ntime, below the job's) is rejected
         let share_in_gap = SubmitSharesStandardOwned {
             channel_id,
             sequence_number: 0,
@@ -1717,6 +1719,29 @@ mod tests {
         };
         let res = channel.validate_share(share_in_gap);
         assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // the upper bound is anchored at the job's min_ntime as well: one second past it is
+        // rejected, exactly on it is accepted
+        let share_past_upper_bound = SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number: 2,
+            job_id: 2,
+            nonce: 3,
+            ntime: job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME + 1,
+            version: 536870912,
+        };
+        let res = channel.validate_share(share_past_upper_bound);
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+        let share_on_upper_bound = SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number: 3,
+            job_id: 2,
+            nonce: 3,
+            ntime: job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME,
+            version: 536870912,
+        };
+        let res = channel.validate_share(share_on_upper_bound);
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
 
         // at the job's min_ntime the share is accepted (channel target is permissive)
         let share_at_job_min_ntime = SubmitSharesStandardOwned {
