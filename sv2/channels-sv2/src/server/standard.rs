@@ -62,11 +62,13 @@ use bitcoin::{
 };
 use mining_sv2::{
     SubmitSharesStandardOwned, ERROR_CODE_OPEN_MINING_CHANNEL_INVALID_NOMINAL_HASHRATE,
+    ERROR_CODE_OPEN_MINING_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
     ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW, ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
     ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID,
     ERROR_CODE_SUBMIT_SHARES_INVALID_NON_ROLLABLE_VERSION_BIT,
     ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
     ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE,
+    ERROR_CODE_UPDATE_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
 };
 use std::collections::HashMap;
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHash};
@@ -112,7 +114,8 @@ impl StandardChannel {
     /// Initializes the standard channel state with the provided parameters, including channel
     /// identifiers, difficulty targets, share accounting, and job management.
     /// Returns an error if target/difficulty parameters are invalid or extranonce prefix
-    /// requirements are not met.
+    /// requirements are not met. In particular, a zero `requested_max_target` is refused with
+    /// [`StandardChannelError::OpenChannelInvalidMaxTarget`].
     ///
     /// For non-JD jobs, `pool_tag_string` is added to the coinbase scriptSig as
     /// `Sv2/pool_tag_string//`.
@@ -152,10 +155,11 @@ impl StandardChannel {
     /// Constructor of `StandardChannel` for a Sv2 Job Declaration Client.
     /// Not meant for usage on a Sv2 Pool Server.
     ///
-    /// Initializes the extended channel state with the provided parameters, including channel
+    /// Initializes the standard channel state with the provided parameters, including channel
     /// identifiers, difficulty targets, share accounting, and job management.
     /// Returns an error if target/difficulty parameters are invalid or extranonce prefix
-    /// requirements are not met.
+    /// requirements are not met. In particular, a zero `requested_max_target` is refused with
+    /// [`StandardChannelError::OpenChannelInvalidMaxTarget`].
     ///
     /// The `pool_tag_string` and `miner_tag_string` are added to the coinbase scriptSig as
     /// `Sv2/pool_tag_string/miner_tag_string/`.
@@ -207,6 +211,13 @@ impl StandardChannel {
         miner_tag_string: Option<String>,
         max_past_jobs: Option<usize>,
     ) -> Result<Self, StandardChannelError> {
+        // see OpenChannelInvalidMaxTarget
+        if requested_max_target == Target::ZERO {
+            return Err(StandardChannelError::OpenChannelInvalidMaxTarget(
+                ERROR_CODE_OPEN_MINING_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
+            ));
+        }
+
         let calculated_target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
                 Ok(target_u256) => target_u256,
@@ -319,8 +330,17 @@ impl StandardChannel {
     /// Updates the current target for this channel.
     ///
     /// Please note that this will NOT update the target associated with jobs that were already created.
-    pub fn set_target(&mut self, target: Target) {
+    ///
+    /// Returns [`StandardChannelError::InvalidTarget`] if `target` is zero, leaving the channel
+    /// unchanged.
+    pub fn set_target(&mut self, target: Target) -> Result<(), StandardChannelError> {
+        if target == Target::ZERO {
+            return Err(StandardChannelError::InvalidTarget);
+        }
+
         self.target = target;
+
+        Ok(())
     }
 
     /// Updates the nominal hashrate for this channel.
@@ -363,7 +383,9 @@ impl StandardChannel {
     /// the target is clamped to `requested_max_target`.
     ///
     /// Returns [`StandardChannelError::UpdateChannelInvalidNominalHashrate`] when
-    /// `nominal_hashrate` cannot be converted into a valid target.
+    /// `nominal_hashrate` cannot be converted into a valid target, and
+    /// [`StandardChannelError::UpdateChannelInvalidMaxTarget`] when `requested_max_target` is
+    /// zero (see the constructor). The channel is left unchanged in both error cases.
     ///
     /// This can be used in two scenarios:
     /// - Client sent `UpdateChannel` message, which contains a `requested_max_target` parameter
@@ -392,6 +414,13 @@ impl StandardChannel {
             Some(ref requested_max_target) => *requested_max_target,
             None => self.requested_max_target,
         };
+
+        // see OpenChannelInvalidMaxTarget
+        if requested_max_target == Target::ZERO {
+            return Err(StandardChannelError::UpdateChannelInvalidMaxTarget(
+                ERROR_CODE_UPDATE_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
+            ));
+        }
 
         // debug hex of target_u256 and max_target
         // just like in share validation
@@ -928,8 +957,10 @@ mod tests {
     };
     use mining_sv2::{
         NewMiningJobOwned as NewMiningJob, SubmitSharesStandardOwned,
+        ERROR_CODE_OPEN_MINING_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
         ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
         ERROR_CODE_SUBMIT_SHARES_INVALID_NON_ROLLABLE_VERSION_BIT,
+        ERROR_CODE_UPDATE_CHANNEL_MAX_TARGET_OUT_OF_RANGE,
     };
     use std::convert::TryInto;
     use template_distribution_sv2::{
@@ -1772,7 +1803,7 @@ mod tests {
         .unwrap();
 
         // force an easy target so that a share would be valid if not for the version check
-        standard_channel.set_target(max_target);
+        standard_channel.set_target(max_target).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -1885,7 +1916,7 @@ mod tests {
         .unwrap();
 
         // force an easy target so that finding a valid share is trivial
-        standard_channel.set_target(max_target);
+        standard_channel.set_target(max_target).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -2857,7 +2888,7 @@ mod tests {
         )
         .unwrap();
         // permissive channel target, so that acceptance only hinges on the nTime bounds
-        standard_channel.set_target(max_target);
+        standard_channel.set_target(max_target).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -2979,7 +3010,7 @@ mod tests {
         )
         .unwrap();
         // permissive channel target, so that the share is accepted under both jobs
-        standard_channel.set_target(max_target);
+        standard_channel.set_target(max_target).unwrap();
 
         let template = |template_id: u64| NewTemplate {
             template_id,
@@ -3076,5 +3107,63 @@ mod tests {
                 .get_shares_accepted(),
             1
         );
+    }
+
+    #[test]
+    fn test_zero_max_target_is_rejected() {
+        // a zero max_target is refused at open, on update and on set_target, leaving the
+        // channel unchanged (see OpenChannelInvalidMaxTarget)
+        let res = StandardChannel::new(
+            1,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![0, 0, 0, 1]).unwrap(),
+            Target::ZERO,
+            1.0,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        );
+        match res {
+            Err(StandardChannelError::OpenChannelInvalidMaxTarget(code)) => {
+                assert_eq!(code, ERROR_CODE_OPEN_MINING_CHANNEL_MAX_TARGET_OUT_OF_RANGE);
+            }
+            other => panic!("expected OpenChannelInvalidMaxTarget, got {other:?}"),
+        }
+
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let nominal_hashrate = 1.0;
+        let mut channel = StandardChannel::new(
+            1,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![0, 0, 0, 1]).unwrap(),
+            max_target,
+            nominal_hashrate,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let target_before = *channel.get_target();
+
+        let res = channel.update_channel(100.0, Some(Target::ZERO));
+        match res {
+            Err(StandardChannelError::UpdateChannelInvalidMaxTarget(code)) => {
+                assert_eq!(code, ERROR_CODE_UPDATE_CHANNEL_MAX_TARGET_OUT_OF_RANGE);
+            }
+            other => panic!("expected UpdateChannelInvalidMaxTarget, got {other:?}"),
+        }
+        assert!(matches!(
+            channel.set_target(Target::ZERO),
+            Err(StandardChannelError::InvalidTarget)
+        ));
+
+        // the channel is left unchanged
+        assert_eq!(channel.get_target(), &target_before);
+        assert_eq!(channel.get_requested_max_target(), &max_target);
+        assert_eq!(channel.get_nominal_hashrate(), nominal_hashrate);
     }
 }
