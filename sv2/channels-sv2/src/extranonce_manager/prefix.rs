@@ -65,11 +65,10 @@ use super::{bitvector::BitVector, MAX_EXTRANONCE_LEN};
 /// Note that "the prefix is no longer in use" is not the same as "the
 /// channel stopped using it as its current prefix". Jobs only carry a copy
 /// of the prefix bytes they were created under and stay valid across a
-/// prefix rotation, so server-side channels deliberately *defer* the drop:
-/// on
-/// [`set_extranonce_prefix`](crate::server::extended::ExtendedChannel::set_extranonce_prefix)
-/// the rotated-out prefix is moved into the channel's job store and only
-/// dropped once every job created under it has become stale. Releasing it
+/// prefix rotation, so channels deliberately *defer* the drop: on
+/// `set_extranonce_prefix` (server and client channels alike) the
+/// rotated-out prefix is retained by the channel and only dropped once no
+/// future, active or past job created under it remains. Releasing it
 /// eagerly would let the allocator hand the same extranonce space to a
 /// second live channel while those jobs still validate shares.
 #[derive(Debug)]
@@ -294,6 +293,61 @@ impl Drop for ExtranoncePrefix {
                 bitmap.set(allocation.local_index as usize, false);
             }
         }
+    }
+}
+
+/// Extranonce prefixes rotated out of a channel that are kept alive while a job created under
+/// their bytes can still accept shares.
+///
+/// Jobs only carry a copy of the prefix bytes they were created under and stay valid across a
+/// prefix rotation. Dropping the rotated-out [`ExtranoncePrefix`] right away would return its
+/// slot to the allocator while those jobs still validate shares under those bytes, letting the
+/// allocator hand the same extranonce space to a second live channel. Holding the object here
+/// keeps the slot reserved; dropping it releases the slot.
+///
+/// Only prefixes that [hold a slot](ExtranoncePrefix::holds_allocator_slot) are ever kept:
+/// wire-sourced prefixes and allocator-produced ones whose allocator is gone reserve nothing,
+/// and retaining them would let byte-identical rotations grow this set once per update.
+#[derive(Debug, Default)]
+pub(crate) struct RetiredExtranoncePrefixes(Vec<ExtranoncePrefix>);
+
+impl RetiredExtranoncePrefixes {
+    /// Takes ownership of a prefix that is no longer a channel's current one.
+    ///
+    /// `live_prefixes` yields the prefix bytes of every job that can still accept shares. The
+    /// prefix is kept only while it holds an allocator slot and one of them matches; otherwise it
+    /// drops here, releasing its slot right away. The prefixes retired earlier are pruned against
+    /// the same `live_prefixes`.
+    pub(crate) fn retire<'a>(
+        &mut self,
+        prefix: ExtranoncePrefix,
+        live_prefixes: impl Iterator<Item = &'a [u8]> + Clone,
+    ) {
+        self.prune(live_prefixes.clone());
+        if prefix.holds_allocator_slot()
+            && live_prefixes.clone().any(|live| live == prefix.as_bytes())
+        {
+            self.0.push(prefix);
+        }
+    }
+
+    /// Drops every retired prefix whose bytes no entry of `live_prefixes` matches (or whose
+    /// allocator has since been dropped), releasing their slots.
+    pub(crate) fn prune<'a>(&mut self, live_prefixes: impl Iterator<Item = &'a [u8]> + Clone) {
+        self.0.retain(|prefix| {
+            prefix.holds_allocator_slot()
+                && live_prefixes.clone().any(|live| live == prefix.as_bytes())
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

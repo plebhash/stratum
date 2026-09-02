@@ -13,7 +13,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::Job;
-use crate::extranonce_manager::ExtranoncePrefix;
+use crate::extranonce_manager::{prefix::RetiredExtranoncePrefixes, ExtranoncePrefix};
 
 /// Maximum number of future jobs a server channel retains while waiting for a
 /// template-distribution `SetNewPrevHash`.
@@ -62,9 +62,8 @@ pub(crate) struct JobStore<T: Job> {
     // Stale jobs are indexed with job_id (u32)
     stale_jobs: HashMap<u32, T>,
     // Extranonce prefixes rotated out of the channel that are still referenced by at least one job
-    // that can accept shares. Holding the object here keeps its allocator slot reserved; dropping
-    // it releases the slot.
-    retired_extranonce_prefixes: Vec<ExtranoncePrefix>,
+    // that can accept shares, so that their allocator slots stay reserved.
+    retired_extranonce_prefixes: RetiredExtranoncePrefixes,
     // Cap on `past_jobs` under the current chain tip. Nonzero by construction: channel
     // constructors resolve `None`/`Some(0)` to `MAX_PAST_JOBS` before reaching here.
     max_past_jobs: usize,
@@ -86,7 +85,7 @@ impl<T: Job> JobStore<T> {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
-            retired_extranonce_prefixes: Vec::new(),
+            retired_extranonce_prefixes: RetiredExtranoncePrefixes::default(),
             max_past_jobs,
         }
     }
@@ -300,59 +299,30 @@ impl<T: Job> JobStore<T> {
     }
 
     /// Takes ownership of an extranonce prefix that is no longer the channel's current one,
-    /// releasing it only once no job created under it can accept shares anymore.
-    ///
-    /// Jobs only carry a copy of the extranonce prefix bytes they were created under, and stay
-    /// valid across a prefix rotation. Dropping the prefix object right away would return its
-    /// slot to the allocator while those jobs still validate shares under those bytes, allowing
-    /// the same extranonce space to be handed to a second live channel.
-    ///
-    /// Only prefixes that [hold a slot](ExtranoncePrefix::holds_allocator_slot) are ever kept:
-    /// wire-sourced prefixes and allocator-produced ones whose allocator is gone reserve nothing,
-    /// and retaining them would let byte-identical rotations grow the retained set once per
-    /// update. Previously retired prefixes whose allocator has since been dropped are released
-    /// here as well.
+    /// releasing it only once no job created under it can accept shares anymore, see
+    /// [`RetiredExtranoncePrefixes`].
     pub fn retire_extranonce_prefix(&mut self, extranonce_prefix: ExtranoncePrefix) {
-        self.retired_extranonce_prefixes
-            .retain(ExtranoncePrefix::holds_allocator_slot);
-        if extranonce_prefix.holds_allocator_slot()
-            && self.is_extranonce_prefix_in_use(extranonce_prefix.as_bytes())
-        {
-            self.retired_extranonce_prefixes.push(extranonce_prefix);
-        }
-        // otherwise it drops here, releasing its slot right away
+        self.retired_extranonce_prefixes.retire(
+            extranonce_prefix,
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.get_extranonce_prefix()),
+        );
     }
 
-    /// Drops every retired extranonce prefix that no future, active or past job still references
-    /// (or whose allocator has since been dropped). Dropping releases the prefix's slot back to
-    /// its allocator.
-    ///
-    /// Stale jobs are deliberately not consulted: shares against them are rejected as stale, so
-    /// they can no longer be credited under the old prefix bytes.
+    /// Drops every retired extranonce prefix that no future, active or past job still references.
+    /// Dropping releases the prefix's slot back to its allocator. Stale jobs are not live: shares
+    /// against them are rejected, so they hold no prefix.
     fn prune_retired_extranonce_prefixes(&mut self) {
-        // bind the job collections separately, so that the closure borrows them instead of
-        // borrowing all of `self` (which `retain` needs mutably)
-        let future_jobs = &self.future_jobs;
-        let active_job = &self.active_job;
-        let past_jobs = &self.past_jobs;
-
-        self.retired_extranonce_prefixes.retain(|prefix| {
-            prefix.holds_allocator_slot()
-                && future_jobs
-                    .values()
-                    .chain(active_job.iter())
-                    .chain(past_jobs.values())
-                    .any(|job| job.get_extranonce_prefix() == prefix.as_bytes())
-        });
-    }
-
-    /// Whether any future, active or past job was created under `extranonce_prefix`.
-    fn is_extranonce_prefix_in_use(&self, extranonce_prefix: &[u8]) -> bool {
-        self.future_jobs
-            .values()
-            .chain(self.active_job.iter())
-            .chain(self.past_jobs.values())
-            .any(|job| job.get_extranonce_prefix() == extranonce_prefix)
+        self.retired_extranonce_prefixes.prune(
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.get_extranonce_prefix()),
+        );
     }
 
     /// Returns the job ID for a future job from a template ID, if any.

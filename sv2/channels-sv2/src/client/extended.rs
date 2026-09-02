@@ -12,7 +12,7 @@ use crate::{
         error::ExtendedChannelError,
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
-    extranonce_manager::ExtranoncePrefix,
+    extranonce_manager::{prefix::RetiredExtranoncePrefixes, ExtranoncePrefix},
     merkle_root::merkle_root_from_path,
     target::{bytes_to_hex, u256_to_block_hash},
     MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
@@ -69,6 +69,8 @@ pub type ExtendedJob = (NewExtendedMiningJobOwned, Vec<u8>, Target);
 ///   the channel cannot tell the two apart.
 /// - Share accounting for the channel (as tracked by the client).
 /// - The channel's current chain tip.
+/// - Extranonce prefixes rotated out of the channel that live jobs were created under (see
+///   [`set_extranonce_prefix`](Self::set_extranonce_prefix)).
 #[derive(Debug)]
 pub struct ExtendedChannel {
     channel_id: u32,
@@ -96,6 +98,9 @@ pub struct ExtendedChannel {
     max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
+    // extranonce prefixes rotated out of the channel that are still referenced by at least one
+    // job that can accept shares, so that their allocator slots stay reserved
+    retired_extranonce_prefixes: RetiredExtranoncePrefixes,
 }
 
 impl ExtendedChannel {
@@ -138,6 +143,7 @@ impl ExtendedChannel {
             max_past_jobs,
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
+            retired_extranonce_prefixes: RetiredExtranoncePrefixes::default(),
         }
     }
 
@@ -191,6 +197,13 @@ impl ExtendedChannel {
     /// Jobs created before this call retain the previous extranonce prefix,
     /// and share validation is performed accordingly.
     ///
+    /// Because of that, a previous prefix minted by a local
+    /// [`ExtranonceAllocator`](crate::extranonce_manager::ExtranonceAllocator) (e.g. by a proxy
+    /// sub-allocating an upstream-assigned extranonce space) is not released here: its slot
+    /// stays reserved until no future, active or past job created under it remains, so that the
+    /// allocator cannot hand the same extranonce space to another live channel while those jobs
+    /// still validate shares. Wire-sourced prefixes hold no slot and are simply dropped.
+    ///
     /// Returns an error if the new extranonce prefix is too large.
     pub fn set_extranonce_prefix(
         &mut self,
@@ -200,7 +213,16 @@ impl ExtendedChannel {
             return Err(ExtendedChannelError::NewExtranoncePrefixTooLarge);
         }
 
-        self.extranonce_prefix = new_extranonce_prefix;
+        let retired_extranonce_prefix =
+            core::mem::replace(&mut self.extranonce_prefix, new_extranonce_prefix);
+        self.retired_extranonce_prefixes.retire(
+            retired_extranonce_prefix,
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.1.as_slice()),
+        );
 
         Ok(())
     }
@@ -359,16 +381,18 @@ impl ExtendedChannel {
 
         match new_extended_mining_job.min_ntime.clone().into_inner() {
             Some(_min_ntime) => {
-                if let Some(active_job) = self.active_job.take() {
-                    self.retire_job_to_past(active_job);
-                }
                 // an ID names either a live job or a stale one, never both
                 self.stale_jobs.remove(&new_extended_mining_job.job_id);
-                self.active_job = Some((
+                // the new job is installed before the displaced one is retired: retirement may
+                // prune retired extranonce prefixes, and the new job is a live user of its bytes
+                let displaced_job = self.active_job.replace((
                     new_extended_mining_job,
                     self.extranonce_prefix.as_bytes().to_vec(),
                     self.target,
                 ));
+                if let Some(displaced_job) = displaced_job {
+                    self.retire_job_to_past(displaced_job);
+                }
             }
             None => {
                 let job_id = new_extended_mining_job.job_id;
@@ -390,6 +414,11 @@ impl ExtendedChannel {
                         self.future_jobs.remove(&evicted_job_id);
                     }
                 }
+
+                // a replaced or evicted job may have been the last one holding a retired
+                // extranonce prefix alive; release such slots now rather than at the next chain
+                // transition, which the upstream can withhold
+                self.prune_retired_extranonce_prefixes();
             }
         }
 
@@ -496,16 +525,18 @@ impl ExtendedChannel {
             merkle_path: set_custom_mining_job.merkle_path,
         };
 
-        if let Some(active_job) = self.active_job.take() {
-            self.retire_job_to_past(active_job);
-        }
         // an ID names either a live job or a stale one, never both
         self.stale_jobs.remove(&new_extended_mining_job.job_id);
-        self.active_job = Some((
+        // the new job is installed before the displaced one is retired: retirement may prune
+        // retired extranonce prefixes, and the new job is a live user of its bytes
+        let displaced_job = self.active_job.replace((
             new_extended_mining_job,
             self.extranonce_prefix.as_bytes().to_vec(),
             self.target,
         ));
+        if let Some(displaced_job) = displaced_job {
+            self.retire_job_to_past(displaced_job);
+        }
 
         Ok(())
     }
@@ -527,6 +558,24 @@ impl ExtendedChannel {
                 self.past_jobs.remove(&evicted_job_id);
             }
         }
+
+        // a replaced or evicted job may have been the last one holding a retired extranonce
+        // prefix alive; release such slots now rather than at the next chain transition, which
+        // the upstream can withhold
+        self.prune_retired_extranonce_prefixes();
+    }
+
+    // Drops every retired extranonce prefix that no future, active or past job still references,
+    // releasing its allocator slot. Stale jobs are not live: shares against them are rejected,
+    // so they hold no prefix.
+    fn prune_retired_extranonce_prefixes(&mut self) {
+        self.retired_extranonce_prefixes.prune(
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.1.as_slice()),
+        );
     }
 
     /// Handles a [`ChainTip`] update.
@@ -572,6 +621,10 @@ impl ExtendedChannel {
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
         self.past_job_order.clear();
+
+        // the jobs that just went stale can no longer accept shares, so any retired extranonce
+        // prefix they were the last reference to is now releasable
+        self.prune_retired_extranonce_prefixes();
 
         // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
         if is_new_prev_hash {
@@ -632,6 +685,10 @@ impl ExtendedChannel {
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
         self.past_job_order.clear();
+
+        // the jobs that just went stale can no longer accept shares, so any retired extranonce
+        // prefix they were the last reference to is now releasable
+        self.prune_retired_extranonce_prefixes();
 
         // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
         if self
@@ -869,7 +926,7 @@ mod tests {
             share_accounting::{ShareValidationError, ShareValidationResult},
             MAX_FUTURE_JOBS, MAX_PAST_JOBS,
         },
-        extranonce_manager::ExtranoncePrefix,
+        extranonce_manager::{ExtranonceAllocator, ExtranonceAllocatorError, ExtranoncePrefix},
     };
     use binary_sv2::Sv2OptionOwned as Sv2Option;
     use bitcoin::Target;
@@ -2914,5 +2971,191 @@ mod tests {
             Err(ShareValidationError::DuplicateShare(_))
         ));
         assert_eq!(channel.get_share_accounting().get_validated_shares(), 1);
+    }
+
+    // An immediately-active job whose coinbase carries a 32-byte extranonce.
+    fn active_job_template(job_id: u32) -> NewExtendedMiningJob {
+        NewExtendedMiningJob {
+            channel_id: 1,
+            job_id,
+            min_ntime: Sv2Option::new(Some(1745596970)),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        }
+    }
+
+    // Builds an extended channel from a real allocator that only has room for two channels,
+    // creates an active job under the first allocated prefix, then rotates the channel onto the
+    // second one.
+    //
+    // Returns the allocator (now with both slots handed out), the channel and the bytes of the
+    // rotated-out prefix.
+    fn extended_channel_with_rotated_extranonce_prefix(
+    ) -> (ExtranonceAllocator, ExtendedChannel, Vec<u8>) {
+        let mut allocator = ExtranonceAllocator::new(vec![], 32, 2).unwrap();
+        let prefix_1 = allocator.allocate_extended(8).unwrap();
+        let prefix_2 = allocator.allocate_extended(8).unwrap();
+        assert_ne!(prefix_1.as_bytes(), prefix_2.as_bytes());
+        assert_eq!(allocator.allocated_count(), 2);
+
+        let prefix_1_bytes = prefix_1.as_bytes().to_vec();
+        let rollable_extranonce_size = (32 - prefix_1_bytes.len()) as u16;
+
+        let mut channel = ExtendedChannel::new(
+            1,
+            "user_identity".to_string(),
+            prefix_1.into(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            rollable_extranonce_size,
+            None,
+        );
+
+        // an immediately-active job, created under the first prefix
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+        assert_eq!(channel.get_active_job().unwrap().1, prefix_1_bytes);
+
+        // rotate the channel onto the second prefix, while the job above is still live
+        channel.set_extranonce_prefix(prefix_2.into()).unwrap();
+
+        (allocator, channel, prefix_1_bytes)
+    }
+
+    #[test]
+    fn test_rotated_extranonce_prefix_slot_not_reused_while_job_live() {
+        // Rotating a locally allocated extranonce prefix must not return the old prefix's
+        // allocator slot to the free pool while jobs created under it can still accept shares.
+        // Otherwise the allocator could hand the very same extranonce space to a second live
+        // channel, making the same work replayable across both.
+        let (mut allocator, channel, prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        // the rotated-out slot is still reserved, so the allocator is still full
+        assert_eq!(allocator.allocated_count(), 2);
+        assert!(matches!(
+            allocator.allocate_extended(8),
+            Err(ExtranonceAllocatorError::CapacityExhausted)
+        ));
+
+        // and the pre-rotation job is still live under the old prefix bytes
+        assert_eq!(channel.get_active_job().unwrap().1, prefix_1_bytes);
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_released_after_jobs_go_stale() {
+        // Counterpart of the test above: the deferred release must actually happen once the
+        // jobs created under the old prefix become stale, otherwise slots would leak.
+        let (mut allocator, mut channel, _prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        let prev_hash = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ];
+        channel
+            .on_chain_tip_update(ChainTip::new(prev_hash.into(), 545259519, 1745596980))
+            .unwrap();
+        assert!(channel.get_stale_job(1).is_some());
+
+        // the pre-rotation job can no longer accept shares, so its prefix was released
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_released_after_job_eviction() {
+        // Eviction counterpart of the test above: when the last job created under a
+        // rotated-out prefix is evicted from past jobs, the prefix's slot must be released
+        // right away — an upstream withholding the next chain transition must not be able to
+        // pin allocator slots.
+        let (mut allocator, mut channel, _prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        // flood enough immediately-active jobs to push the pre-rotation job out of past jobs
+        for job_id in 2..2 + MAX_PAST_JOBS as u32 + 2 {
+            channel
+                .on_new_extended_mining_job(active_job_template(job_id))
+                .unwrap();
+        }
+        assert!(channel.get_past_job(1).is_none());
+
+        // the evicted job was the last reference to the rotated-out prefix, so its slot is free
+        // again
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_survives_install_of_a_job_under_its_bytes() {
+        // Retiring the displaced job may evict a past job and prune retired extranonce
+        // prefixes. The job being installed is a live user of the current prefix bytes, so it
+        // must be in place when that prune runs: a retired prefix from a recreated allocator can
+        // share those bytes, and pruning before the install would release its slot while the
+        // new job goes on to accept shares under them.
+        let mut allocator_1 = ExtranonceAllocator::new(vec![], 32, 1).unwrap();
+        let prefix_1 = allocator_1.allocate_extended(8).unwrap();
+        let mut allocator_2 = ExtranonceAllocator::new(vec![], 32, 1).unwrap();
+        let prefix_2 = allocator_2.allocate_extended(8).unwrap();
+        assert_eq!(prefix_1.as_bytes(), prefix_2.as_bytes());
+        let prefix_len = prefix_1.as_bytes().len();
+        let rollable_extranonce_size = (32 - prefix_len) as u16;
+
+        let mut channel = ExtendedChannel::new(
+            1,
+            "user_identity".to_string(),
+            prefix_1.into(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            rollable_extranonce_size,
+            Some(1),
+        );
+
+        // job 1 under the first prefix, then a rotation onto a wire prefix and job 2 under it
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+        channel
+            .set_extranonce_prefix(ExtranoncePrefix::from_wire(vec![7; prefix_len]).unwrap())
+            .unwrap();
+        channel
+            .on_new_extended_mining_job(active_job_template(2))
+            .unwrap();
+        assert_eq!(allocator_1.allocated_count(), 1);
+
+        // rotate onto the second allocator's byte-identical prefix; installing job 3 under it
+        // retires job 2 and evicts job 1, the last job created under the first prefix
+        channel.set_extranonce_prefix(prefix_2.into()).unwrap();
+        channel
+            .on_new_extended_mining_job(active_job_template(3))
+            .unwrap();
+        assert!(channel.get_past_job(1).is_none());
+
+        // job 3 lives under those bytes, so the first allocator's slot stays reserved
+        assert_eq!(allocator_1.allocated_count(), 1);
+        assert!(matches!(
+            allocator_1.allocate_extended(8),
+            Err(ExtranonceAllocatorError::CapacityExhausted)
+        ));
     }
 }
