@@ -53,7 +53,9 @@ pub const MAX_PAST_JOBS: usize = 16;
 /// arrives within seconds — not to reconcile a tip. 4 096 covers ~11 hours of history for a
 /// typical 6 shares/min channel and ~7 minutes for a very busy 600 shares/min proxy channel,
 /// far beyond any realistic duplicate window in both cases. Overflow evicts oldest-first, and
-/// an evicted-then-replayed hash costs one double-counted local statistic.
+/// an evicted-then-replayed hash costs one double-counted local statistic: an accepted replay
+/// window, see [`ShareAccounting`](share_accounting::ShareAccounting) for why clients do not
+/// fail hard at the bound.
 pub const MAX_SEEN_SHARES: usize = 4_096;
 
 // Type aliases that switch between `std::collections` and `hashbrown`

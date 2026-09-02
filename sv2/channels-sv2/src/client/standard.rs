@@ -438,7 +438,10 @@ impl StandardChannel {
     ///   future queue, or the value its own message advertised for an immediately-active job
     ///   (see [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the
     ///   spec's elapsed-time window).
-    /// - Updates share accounting state based on validation result.
+    /// - Updates share accounting state based on validation result. Duplicate detection is
+    ///   bounded at [`MAX_SEEN_SHARES`](crate::client::MAX_SEEN_SHARES) validated shares per
+    ///   `prev_hash` (oldest evicted first), so an evicted share can be validated again; see
+    ///   [`ShareAccounting`] for why this replay window is accepted on clients.
     /// - Returns whether the share is valid or resulted in a block being found.
     /// - Returns error describing why share is not valid.
     pub fn validate_share(

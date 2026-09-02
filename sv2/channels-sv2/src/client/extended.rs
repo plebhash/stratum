@@ -658,6 +658,10 @@ impl ExtendedChannel {
     ///   bound relates to the spec's elapsed-time window).
     /// - Indicates whether a block was found from the share.
     /// - Maintains local share accounting for later reconciliation with upstream acknowledgements.
+    ///   Duplicate detection is bounded at [`MAX_SEEN_SHARES`](crate::client::MAX_SEEN_SHARES)
+    ///   validated shares per `prev_hash` (oldest evicted first), so an evicted share can be
+    ///   validated again; see [`ShareAccounting`] for why this replay window is accepted on
+    ///   clients.
     pub fn validate_share(
         &mut self,
         share: SubmitSharesExtendedOwned,

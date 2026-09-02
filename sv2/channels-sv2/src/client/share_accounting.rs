@@ -96,6 +96,24 @@ pub enum ShareValidationError {
 /// - cumulative acknowledged work (as reported by upstream [`SubmitSharesSuccess`](mining_sv2::SubmitSharesSuccess))
 /// - number of blocks found
 ///
+/// # Duplicate detection is bounded, and its overflow is an accepted replay window
+///
+/// `seen_shares` holds at most [`MAX_SEEN_SHARES`] validated hashes per `prev_hash`, evicting
+/// oldest-first. After that many validated shares under one still-current `prev_hash`, a replay
+/// of an evicted share passes [`is_share_seen`](Self::is_share_seen) again and is validated (and
+/// forwarded) a second time. This is deliberate: clients do not fail hard at the bound the way
+/// server channels do, because
+///
+/// - the target is upstream-controlled, so no bound derived from an expected share rate can
+///   constrain a hostile upstream; the flat, device-affordable [`MAX_SEEN_SHARES`] is the only
+///   honest response to an untrusted rate input;
+/// - the double count is a local, pre-upstream statistic (`validated_shares`,
+///   `validated_work_sum`, `blocks_found`): the upstream's own dedup still rejects the replayed
+///   share, so nothing is paid out on it;
+/// - failing validation at the bound would hand a hostile upstream advertising a trivial target
+///   a one-message channel-kill vector, whereas eviction keeps the channel alive at the cost of
+///   a bounded, upstream-rejected replay.
+///
 /// [`validate_share`]: super::extended::ExtendedChannel::validate_share
 /// [`track_validated_share`]: ShareAccounting::track_validated_share
 /// [`on_share_acknowledgement`]: ShareAccounting::on_share_acknowledgement
