@@ -182,6 +182,20 @@ impl ExtranoncePrefix {
     pub fn upstream_prefix_len(&self) -> Option<u8> {
         self.allocation.as_ref().map(|a| a.upstream_prefix_len)
     }
+
+    /// Whether this prefix currently reserves a slot in a live allocator's bitmap.
+    ///
+    /// `false` for wire-sourced prefixes (see [`from_wire`](Self::from_wire)) and for
+    /// allocator-produced ones whose allocator has since been dropped: their [`Drop`] is a
+    /// no-op, so there is nothing to keep reserved by holding on to them. Channels use this to
+    /// decide whether a rotated-out prefix is worth retaining while jobs created under it are
+    /// still live.
+    #[inline]
+    pub fn holds_allocator_slot(&self) -> bool {
+        self.allocation
+            .as_ref()
+            .is_some_and(|allocation| allocation.bitmap.strong_count() > 0)
+    }
 }
 
 impl AllocatedExtranoncePrefix {
