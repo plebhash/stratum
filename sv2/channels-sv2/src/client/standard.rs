@@ -351,7 +351,7 @@ impl StandardChannel {
             min_ntime: new_extended_mining_job.min_ntime,
         };
 
-        self.store_new_mining_job(new_mining_job)
+        self.on_new_mining_job(new_mining_job)
     }
 
     /// Handles a newly received [`NewMiningJob`](mining_sv2::NewMiningJob) message from upstream.
@@ -366,37 +366,6 @@ impl StandardChannel {
     /// the tip's is refused with [`StandardChannelError::JobMinNtimeBelowChainTip`], leaving the
     /// channel unchanged.
     pub fn on_new_mining_job(
-        &mut self,
-        new_mining_job: NewMiningJobOwned,
-    ) -> Result<(), StandardChannelError> {
-        self.store_new_mining_job(new_mining_job)
-    }
-
-    // Moves a displaced job into past jobs, evicting the oldest past job beyond
-    // [`MAX_PAST_JOBS`]. A share against an evicted job is rejected as `InvalidJobId` even
-    // though it would otherwise have been accepted and propagated: a bounded loss of
-    // creditable work, the price of bounding memory under a hostile upstream.
-    fn retire_job_to_past(&mut self, job: StandardJob) {
-        let job_id = job.0.job_id;
-        self.past_jobs.insert(job_id, job);
-
-        // a replaced job_id moves to the back of the eviction order
-        self.past_job_order.retain(|id| *id != job_id);
-        self.past_job_order.push_back(job_id);
-
-        if self.past_jobs.len() > self.max_past_jobs {
-            if let Some(evicted_job_id) = self.past_job_order.pop_front() {
-                self.past_jobs.remove(&evicted_job_id);
-            }
-        }
-
-        // a replaced or evicted job may have been the last one holding a retired extranonce
-        // prefix alive; release such slots now rather than at the next chain transition, which
-        // the upstream can withhold
-        self.prune_retired_extranonce_prefixes();
-    }
-
-    fn store_new_mining_job(
         &mut self,
         new_mining_job: NewMiningJobOwned,
     ) -> Result<(), StandardChannelError> {
@@ -455,6 +424,30 @@ impl StandardChannel {
         }
 
         Ok(())
+    }
+
+    // Moves a displaced job into past jobs, evicting the oldest past job beyond
+    // [`MAX_PAST_JOBS`]. A share against an evicted job is rejected as `InvalidJobId` even
+    // though it would otherwise have been accepted and propagated: a bounded loss of
+    // creditable work, the price of bounding memory under a hostile upstream.
+    fn retire_job_to_past(&mut self, job: StandardJob) {
+        let job_id = job.0.job_id;
+        self.past_jobs.insert(job_id, job);
+
+        // a replaced job_id moves to the back of the eviction order
+        self.past_job_order.retain(|id| *id != job_id);
+        self.past_job_order.push_back(job_id);
+
+        if self.past_jobs.len() > self.max_past_jobs {
+            if let Some(evicted_job_id) = self.past_job_order.pop_front() {
+                self.past_jobs.remove(&evicted_job_id);
+            }
+        }
+
+        // a replaced or evicted job may have been the last one holding a retired extranonce
+        // prefix alive; release such slots now rather than at the next chain transition, which
+        // the upstream can withhold
+        self.prune_retired_extranonce_prefixes();
     }
 
     // Drops every retired extranonce prefix that no future, active or past job still references,
