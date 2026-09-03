@@ -368,7 +368,9 @@ impl ExtendedChannel {
     ///   evicts the oldest.
     /// - Otherwise, the job is activated and previous active job moves to the past jobs list.
     ///   At most [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the
-    ///   oldest.
+    ///   oldest. Such a job is mined against the current chain tip, so a `min_ntime` below the
+    ///   tip's is refused with [`ExtendedChannelError::JobMinNtimeBelowChainTip`], leaving the
+    ///   channel unchanged.
     pub fn on_new_extended_mining_job(
         &mut self,
         new_extended_mining_job: NewExtendedMiningJobOwned,
@@ -395,7 +397,18 @@ impl ExtendedChannel {
         };
 
         match new_extended_mining_job.min_ntime.clone().into_inner() {
-            Some(_min_ntime) => {
+            Some(min_ntime) => {
+                // the job is mined against the chain tip, whose min_ntime is the smallest nTime
+                // available for it; a job allowing earlier shares would have them carry a
+                // timestamp the tip declared unavailable
+                if self
+                    .chain_tip
+                    .as_ref()
+                    .is_some_and(|chain_tip| min_ntime < chain_tip.min_ntime())
+                {
+                    return Err(ExtendedChannelError::JobMinNtimeBelowChainTip);
+                }
+
                 // an ID names either a live job or a stale one, never both
                 self.stale_jobs.remove(&new_extended_mining_job.job_id);
                 // the new job is installed before the displaced one is retired: retirement may
@@ -3245,5 +3258,59 @@ mod tests {
         ));
         assert_eq!(channel.get_target(), &target);
         assert_eq!(channel.get_future_job(1).unwrap().2, target);
+    }
+
+    #[test]
+    fn test_immediately_active_job_below_chain_tip_min_ntime_is_rejected() {
+        // An immediately-active job is mined against the current chain tip, whose min_ntime is
+        // the smallest nTime available for it, so a job with a lower min_ntime must be refused
+        // and leave the channel unchanged. A min_ntime equal to the tip's is the lowest allowed.
+        let channel_id = 1;
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])
+            .unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        let tip_ntime: u32 = 1745596970;
+        let mut future_job = active_job_template(1);
+        future_job.min_ntime = Sv2Option::new(None);
+        channel.on_new_extended_mining_job(future_job).unwrap();
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        let mut below_tip = active_job_template(2);
+        below_tip.min_ntime = Sv2Option::new(Some(tip_ntime - 1));
+        assert!(matches!(
+            channel.on_new_extended_mining_job(below_tip),
+            Err(ExtendedChannelError::JobMinNtimeBelowChainTip)
+        ));
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_past_jobs_count(), 0);
+
+        let mut at_tip = active_job_template(3);
+        at_tip.min_ntime = Sv2Option::new(Some(tip_ntime));
+        channel.on_new_extended_mining_job(at_tip).unwrap();
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 3);
     }
 }

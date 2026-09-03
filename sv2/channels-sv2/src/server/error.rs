@@ -34,6 +34,9 @@ pub enum ExtendedChannelError {
     ExtranoncePrefixTooLarge,
     ScriptSigSizeTooLarge,
     InvalidJobOrigin,
+    /// An immediately-active job carried a `min_ntime` below the `min_ntime` of the chain tip it
+    /// is mined against; the job is discarded and the channel left unchanged.
+    JobMinNtimeBelowChainTip,
 }
 
 #[derive(Debug)]
@@ -75,4 +78,7 @@ pub enum StandardChannelError {
     ChainTipNotSet,
     FailedToConvertToStandardJob,
     ScriptSigSizeTooLarge,
+    /// An immediately-active job carried a `min_ntime` below the `min_ntime` of the chain tip it
+    /// is mined against; the job is discarded and the channel left unchanged.
+    JobMinNtimeBelowChainTip,
 }

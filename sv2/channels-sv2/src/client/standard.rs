@@ -326,8 +326,10 @@ impl StandardChannel {
     /// The new job is constructed using the current extranonce prefix.
     ///
     /// Returns [`StandardChannelError::InvalidCoinbase`] if the job's coinbase transaction
-    /// (prefix + this channel's extranonce prefix + suffix) is malformed, in which case the
-    /// job is discarded and channel state is left untouched.
+    /// (prefix + this channel's extranonce prefix + suffix) is malformed, and
+    /// [`StandardChannelError::JobMinNtimeBelowChainTip`] if the job is immediately active with a
+    /// `min_ntime` below the current chain tip's; in both cases the job is discarded and channel
+    /// state is left untouched.
     pub fn on_new_group_channel_job(
         &mut self,
         new_extended_mining_job: NewExtendedMiningJobOwned,
@@ -349,9 +351,7 @@ impl StandardChannel {
             min_ntime: new_extended_mining_job.min_ntime,
         };
 
-        self.store_new_mining_job(new_mining_job);
-
-        Ok(())
+        self.store_new_mining_job(new_mining_job)
     }
 
     /// Handles a newly received [`NewMiningJob`](mining_sv2::NewMiningJob) message from upstream.
@@ -361,8 +361,15 @@ impl StandardChannel {
     ///   future jobs are kept: storing a new one beyond that limit evicts the oldest.
     /// - If an active job exists, it is moved to past jobs on activation. At most
     ///   [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the oldest.
-    pub fn on_new_mining_job(&mut self, new_mining_job: NewMiningJobOwned) {
-        self.store_new_mining_job(new_mining_job);
+    ///
+    /// An immediately-active job is mined against the current chain tip, so a `min_ntime` below
+    /// the tip's is refused with [`StandardChannelError::JobMinNtimeBelowChainTip`], leaving the
+    /// channel unchanged.
+    pub fn on_new_mining_job(
+        &mut self,
+        new_mining_job: NewMiningJobOwned,
+    ) -> Result<(), StandardChannelError> {
+        self.store_new_mining_job(new_mining_job)
     }
 
     // Moves a displaced job into past jobs, evicting the oldest past job beyond
@@ -389,9 +396,23 @@ impl StandardChannel {
         self.prune_retired_extranonce_prefixes();
     }
 
-    fn store_new_mining_job(&mut self, new_mining_job: NewMiningJobOwned) {
+    fn store_new_mining_job(
+        &mut self,
+        new_mining_job: NewMiningJobOwned,
+    ) -> Result<(), StandardChannelError> {
         match new_mining_job.min_ntime.clone().into_inner() {
-            Some(_min_ntime) => {
+            Some(min_ntime) => {
+                // the job is mined against the chain tip, whose min_ntime is the smallest nTime
+                // available for it; a job allowing earlier shares would have them carry a
+                // timestamp the tip declared unavailable
+                if self
+                    .chain_tip
+                    .as_ref()
+                    .is_some_and(|chain_tip| min_ntime < chain_tip.min_ntime())
+                {
+                    return Err(StandardChannelError::JobMinNtimeBelowChainTip);
+                }
+
                 // an ID names either a live job or a stale one, never both
                 self.stale_jobs.remove(&new_mining_job.job_id);
                 // the new job is installed before the displaced one is retired: retirement may
@@ -432,6 +453,8 @@ impl StandardChannel {
                 self.prune_retired_extranonce_prefixes();
             }
         }
+
+        Ok(())
     }
 
     // Drops every retired extranonce prefix that no future, active or past job still references,
@@ -740,7 +763,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         assert_eq!(channel.get_future_jobs_count(), 1);
         assert_eq!(channel.get_active_job(), None);
@@ -810,7 +833,7 @@ mod tests {
         for job_id in 0..flood_size {
             let mut job = future_job.clone();
             job.job_id = job_id;
-            channel.on_new_mining_job(job);
+            channel.on_new_mining_job(job).unwrap();
         }
 
         assert_eq!(channel.get_future_jobs_count(), MAX_FUTURE_JOBS);
@@ -858,16 +881,16 @@ mod tests {
         for job_id in 0..MAX_FUTURE_JOBS as u32 {
             let mut job = future_job.clone();
             job.job_id = job_id;
-            channel.on_new_mining_job(job);
+            channel.on_new_mining_job(job).unwrap();
         }
 
         // re-send job_id 0: it should move to the back of the eviction order
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // one more distinct job_id: job_id 1 is now the oldest and gets evicted
         let mut job = future_job.clone();
         job.job_id = MAX_FUTURE_JOBS as u32;
-        channel.on_new_mining_job(job);
+        channel.on_new_mining_job(job).unwrap();
 
         assert_eq!(channel.get_future_jobs_count(), MAX_FUTURE_JOBS);
         assert!(channel.get_future_job(1).is_none());
@@ -928,7 +951,7 @@ mod tests {
         for job_id in 0..job_count {
             let mut job = active_job.clone();
             job.job_id = job_id;
-            channel.on_new_mining_job(job);
+            channel.on_new_mining_job(job).unwrap();
         }
 
         // bounded by the override, not by MAX_PAST_JOBS
@@ -955,7 +978,7 @@ mod tests {
         for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
             let mut job = active_job.clone();
             job.job_id = job_id;
-            zero_cap_channel.on_new_mining_job(job);
+            zero_cap_channel.on_new_mining_job(job).unwrap();
         }
         assert_eq!(zero_cap_channel.get_past_jobs_count(), MAX_PAST_JOBS);
     }
@@ -995,7 +1018,7 @@ mod tests {
         for job_id in 0..flood_size {
             let mut job = active_job.clone();
             job.job_id = job_id;
-            channel.on_new_mining_job(job);
+            channel.on_new_mining_job(job).unwrap();
         }
 
         assert_eq!(channel.get_past_jobs_count(), MAX_PAST_JOBS);
@@ -1044,7 +1067,7 @@ mod tests {
             min_ntime: Sv2Option::new(Some(ntime)),
         };
 
-        channel.on_new_mining_job(active_job.clone());
+        channel.on_new_mining_job(active_job.clone()).unwrap();
 
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
@@ -1059,7 +1082,7 @@ mod tests {
 
         let mut new_active_job = active_job.clone();
         new_active_job.job_id = 2;
-        channel.on_new_mining_job(new_active_job.clone());
+        channel.on_new_mining_job(new_active_job.clone()).unwrap();
 
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
@@ -1107,7 +1130,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // network target: 7fffff0000000000000000000000000000000000000000000000000000000000
         let nbits = 545259519;
@@ -1189,7 +1212,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         let nbits = 545259519;
         let prev_hash = [
@@ -1261,7 +1284,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
         let nbits = 453040064;
@@ -1339,7 +1362,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
         let nbits = 453040064;
@@ -1412,7 +1435,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // network target: 7fffff0000000000000000000000000000000000000000000000000000000000
         let nbits = 545259519;
@@ -1495,7 +1518,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // network target: 7fffff0000000000000000000000000000000000000000000000000000000000
         let nbits = 545259519;
@@ -1577,7 +1600,7 @@ mod tests {
             min_ntime: Sv2Option::new(None),
         };
 
-        channel.on_new_mining_job(future_job.clone());
+        channel.on_new_mining_job(future_job.clone()).unwrap();
 
         // the future job was stored under the old target, now we tighten it to
         // 0000500000000000000000000000000000000000000000000000000000000000
@@ -1652,22 +1675,26 @@ mod tests {
         ];
 
         // job 1 is a non-future job, so it becomes active immediately
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: 1,
-            merkle_root: merkle_root.into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(Some(1746839900)),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: 1,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(Some(1746839900)),
+            })
+            .unwrap();
 
         // job 2 is a future job, waiting for a SetNewPrevHash
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: 2,
-            merkle_root: merkle_root.into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(None),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: 2,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(None),
+            })
+            .unwrap();
 
         let prev_hash: [u8; 32] = [
             200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
@@ -1737,24 +1764,28 @@ mod tests {
         // fill past jobs to the cap: jobs 0..=MAX_PAST_JOBS are immediately active, each
         // retiring its predecessor
         for job_id in 0..=MAX_PAST_JOBS as u32 {
-            channel.on_new_mining_job(NewMiningJob {
-                channel_id,
-                job_id,
-                merkle_root: merkle_root.into(),
-                version: 536870912,
-                min_ntime: Sv2Option::new(Some(1746839900)),
-            });
+            channel
+                .on_new_mining_job(NewMiningJob {
+                    channel_id,
+                    job_id,
+                    merkle_root: merkle_root.into(),
+                    version: 536870912,
+                    min_ntime: Sv2Option::new(Some(1746839900)),
+                })
+                .unwrap();
         }
 
         // a future job to activate on the tip transition
         let future_job_id = 100;
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: future_job_id,
-            merkle_root: merkle_root.into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(None),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: future_job_id,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(None),
+            })
+            .unwrap();
 
         let prev_hash: [u8; 32] = [
             200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
@@ -1808,13 +1839,15 @@ mod tests {
 
         // activate a chain tip at nTime t via a future job
         let tip_ntime: u32 = 1745596930;
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: 1,
-            merkle_root: merkle_root.into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(None),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: 1,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(None),
+            })
+            .unwrap();
         // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
         channel
             .on_set_new_prev_hash(SetNewPrevHashMp {
@@ -1832,13 +1865,15 @@ mod tests {
 
         // install an immediately-active job whose own min_ntime is later than the tip's
         let job_min_ntime = tip_ntime + 3;
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: 2,
-            merkle_root: merkle_root.into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(Some(job_min_ntime)),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: 2,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(Some(job_min_ntime)),
+            })
+            .unwrap();
 
         // a share in the gap (at or above the tip's min_ntime, below the job's) is rejected
         let share_in_gap = SubmitSharesStandardOwned {
@@ -1955,17 +1990,19 @@ mod tests {
         )
         .unwrap();
 
-        channel.on_new_mining_job(NewMiningJob {
-            channel_id,
-            job_id: 1,
-            merkle_root: [
-                189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84,
-                56, 86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
-            ]
-            .into(),
-            version: 536870912,
-            min_ntime: Sv2Option::new(None),
-        });
+        channel
+            .on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id: 1,
+                merkle_root: [
+                    189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24,
+                    84, 56, 86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+                ]
+                .into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(None),
+            })
+            .unwrap();
 
         let tip_ntime: u32 = 1745596930;
         // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
@@ -2042,8 +2079,8 @@ mod tests {
 
         // job 1 is active under the current tip, and upstream reuses its ID for the next tip's
         // future job
-        channel.on_new_mining_job(job(Some(1745596970)));
-        channel.on_new_mining_job(job(None));
+        channel.on_new_mining_job(job(Some(1745596970))).unwrap();
+        channel.on_new_mining_job(job(None)).unwrap();
 
         // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
         channel
@@ -2083,7 +2120,7 @@ mod tests {
         // immediately-active job
         let mut future_job = job(None);
         future_job.job_id = 2;
-        channel.on_new_mining_job(future_job);
+        channel.on_new_mining_job(future_job).unwrap();
         channel
             .on_set_new_prev_hash(SetNewPrevHashMp {
                 channel_id,
@@ -2098,7 +2135,7 @@ mod tests {
             })
             .unwrap();
         assert!(channel.get_stale_job(1).is_some());
-        channel.on_new_mining_job(job(Some(1745596990)));
+        channel.on_new_mining_job(job(Some(1745596990))).unwrap();
 
         assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
         assert!(channel.get_stale_job(1).is_none());
@@ -2149,7 +2186,9 @@ mod tests {
         .unwrap();
 
         // an immediately-active job, created under the first prefix
-        channel.on_new_mining_job(job_template(1, Some(1745596970)));
+        channel
+            .on_new_mining_job(job_template(1, Some(1745596970)))
+            .unwrap();
         assert_eq!(channel.get_active_job().unwrap().1, prefix_1_bytes);
 
         // rotate the channel onto the second prefix, while the job above is still live
@@ -2186,7 +2225,7 @@ mod tests {
             standard_channel_with_rotated_extranonce_prefix();
 
         // a future job (created under the new prefix) to activate on the tip transition
-        channel.on_new_mining_job(job_template(2, None));
+        channel.on_new_mining_job(job_template(2, None)).unwrap();
         channel
             .on_set_new_prev_hash(SetNewPrevHashMp {
                 channel_id: 1,
@@ -2218,7 +2257,9 @@ mod tests {
 
         // flood enough immediately-active jobs to push the pre-rotation job out of past jobs
         for job_id in 2..2 + MAX_PAST_JOBS as u32 + 2 {
-            channel.on_new_mining_job(job_template(job_id, Some(1745596970)));
+            channel
+                .on_new_mining_job(job_template(job_id, Some(1745596970)))
+                .unwrap();
         }
         assert!(channel.get_past_job(1).is_none());
 
@@ -2253,17 +2294,23 @@ mod tests {
         .unwrap();
 
         // job 1 under the first prefix, then a rotation onto a wire prefix and job 2 under it
-        channel.on_new_mining_job(job_template(1, Some(1745596970)));
+        channel
+            .on_new_mining_job(job_template(1, Some(1745596970)))
+            .unwrap();
         channel
             .set_extranonce_prefix(ExtranoncePrefix::from_wire(vec![7; prefix_len]).unwrap())
             .unwrap();
-        channel.on_new_mining_job(job_template(2, Some(1745596970)));
+        channel
+            .on_new_mining_job(job_template(2, Some(1745596970)))
+            .unwrap();
         assert_eq!(allocator_1.allocated_count(), 1);
 
         // rotate onto the second allocator's byte-identical prefix; installing job 3 under it
         // retires job 2 and evicts job 1, the last job created under the first prefix
         channel.set_extranonce_prefix(prefix_2.into()).unwrap();
-        channel.on_new_mining_job(job_template(3, Some(1745596970)));
+        channel
+            .on_new_mining_job(job_template(3, Some(1745596970)))
+            .unwrap();
         assert!(channel.get_past_job(1).is_none());
 
         // job 3 lives under those bytes, so the first allocator's slot stays reserved
@@ -2307,7 +2354,7 @@ mod tests {
         .unwrap();
 
         // a queued future job, whose target a SetTarget would otherwise refresh
-        channel.on_new_mining_job(job_template(1, None));
+        channel.on_new_mining_job(job_template(1, None)).unwrap();
 
         assert!(matches!(
             channel.set_target(Target::ZERO),
@@ -2315,5 +2362,82 @@ mod tests {
         ));
         assert_eq!(channel.get_target(), &target);
         assert_eq!(channel.get_future_job(1).unwrap().2, target);
+    }
+
+    #[test]
+    fn test_immediately_active_job_below_chain_tip_min_ntime_is_rejected() {
+        // An immediately-active job is mined against the current chain tip, whose min_ntime is
+        // the smallest nTime available for it, so a job with a lower min_ntime must be refused
+        // and leave the channel unchanged, whether it arrives as NewMiningJob or is derived from
+        // a group channel's NewExtendedMiningJob. A min_ntime equal to the tip's is the lowest
+        // allowed.
+        let channel_id = 1;
+        // a 32-byte prefix: the group job's coinbase below carries a 32-byte extranonce
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![0; 32]).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            None,
+        )
+        .unwrap();
+
+        let tip_ntime: u32 = 1745596970;
+        channel.on_new_mining_job(job_template(1, None)).unwrap();
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            channel.on_new_mining_job(job_template(2, Some(tip_ntime - 1))),
+            Err(StandardChannelError::JobMinNtimeBelowChainTip)
+        ));
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_past_jobs_count(), 0);
+
+        let group_job = NewExtendedMiningJob {
+            channel_id,
+            job_id: 2,
+            min_ntime: Sv2Option::new(Some(tip_ntime - 1)),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.on_new_group_channel_job(group_job),
+            Err(StandardChannelError::JobMinNtimeBelowChainTip)
+        ));
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+
+        channel
+            .on_new_mining_job(job_template(3, Some(tip_ntime)))
+            .unwrap();
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, 3);
     }
 }

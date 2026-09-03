@@ -610,6 +610,10 @@ impl ExtendedChannel {
     ///
     /// Only meant to be used if REQUIRES_CUSTOM_WORK is NOT set on the connection this channel exists on.
     /// If this flag is set, on_set_custom_mining_job should be used instead.
+    ///
+    /// A non-future job is mined against this channel's chain tip, so a `min_ntime` below the
+    /// tip's (the group channel built it under an older tip than this channel's) is refused with
+    /// [`ExtendedChannelError::JobMinNtimeBelowChainTip`], leaving the channel unchanged.
     pub fn on_group_channel_job(
         &mut self,
         mut extended_job: ExtendedJob,
@@ -629,6 +633,19 @@ impl ExtendedChannel {
                 self.job_store.add_future_job(template_id, extended_job);
             }
             false => {
+                // the job is mined against this channel's chain tip, whose min_ntime is the
+                // smallest nTime available for it; a job allowing earlier shares would have them
+                // carry a timestamp the tip declared unavailable
+                if let Some(min_ntime) = extended_job.get_min_ntime() {
+                    if self
+                        .chain_tip
+                        .as_ref()
+                        .is_some_and(|chain_tip| min_ntime < chain_tip.min_ntime())
+                    {
+                        return Err(ExtendedChannelError::JobMinNtimeBelowChainTip);
+                    }
+                }
+
                 self.job_id_to_target
                     .insert(extended_job.get_job_id(), self.target);
                 // dropping the evicted past job's target mapping (its shares degrade to
@@ -4051,6 +4068,97 @@ mod tests {
         assert_eq!(channel.get_target(), &target_before);
         assert_eq!(channel.get_requested_max_target(), &max_target);
         assert_eq!(channel.get_nominal_hashrate(), nominal_hashrate);
+    }
+
+    #[test]
+    fn test_on_group_channel_job_rejects_min_ntime_below_chain_tip() {
+        // A non-future job installed via on_group_channel_job is mined against this channel's
+        // chain tip, whose min_ntime is the smallest nTime available for it, so a group job built
+        // under an older tip (a lower min_ntime) must be refused and leave the channel unchanged.
+        // A min_ntime equal to the tip's is the lowest allowed.
+        let channel_id = 1;
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])
+            .unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        let n_bits = 453040064;
+        let prev_hash: U256 = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let tip_ntime = 1745596910;
+        channel.set_chain_tip(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime));
+
+        let full_extranonce_size = channel.get_full_extranonce_size();
+        let mut group_job_factory = crate::server::jobs::factory::JobFactory::new(true, None, None);
+        let mut group_job = |min_ntime: u32| {
+            group_job_factory
+                .new_extended_job(
+                    99,
+                    Some(ChainTip::new(prev_hash.clone(), n_bits, min_ntime)),
+                    vec![],
+                    template.clone(),
+                    coinbase_reward_outputs.clone(),
+                    full_extranonce_size,
+                )
+                .unwrap()
+        };
+
+        assert!(matches!(
+            channel.on_group_channel_job(group_job(tip_ntime - 1)),
+            Err(ExtendedChannelError::JobMinNtimeBelowChainTip)
+        ));
+        assert!(channel.get_active_job().is_none());
+
+        channel.on_group_channel_job(group_job(tip_ntime)).unwrap();
+        assert!(channel.get_active_job().is_some());
     }
 
     #[test]
