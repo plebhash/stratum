@@ -35,7 +35,7 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 /// The cap is a retention *window* — `cap / job rate` — and here the upstream sets the rate.
 /// Measurement bounded the requirement at ~16 s (PR #2307), so 16 covers the fastest configurable
 /// rate of one job per second. Operators who know their upstream's interval `T` should set
-/// `ceil(16 s / T)`: 3 at a typical 6 s interval, 13.5 kB per channel against 72 kB (PR #2290).
+/// `ceil(16 s / T)` and reclaim the memory, at ~4.5 kB per retained job per channel (PR #2290).
 /// That matters most on a translator, where every downstream miner holds its own client channel;
 /// on a job-declaration client the interval is its own `SetCustomMiningJob` rate.
 ///
