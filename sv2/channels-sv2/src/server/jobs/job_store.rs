@@ -152,16 +152,15 @@ impl<T: Job> JobStore<T> {
         new_job_id
     }
 
-    /// Moves the active job (if any) into past jobs, evicting the oldest past job beyond this
-    /// store's `max_past_jobs`. A share against an evicted job is rejected as `InvalidJobId` even
-    /// though it would otherwise have been accepted and credited: a bounded loss of creditable
-    /// work, the price of bounding memory under a hostile upstream.
+    /// Moves a displaced job into past jobs, evicting the oldest past job beyond this store's
+    /// `max_past_jobs`. A share against an evicted job is rejected as `InvalidJobId` even though
+    /// it would otherwise have been accepted and credited: a bounded loss of creditable work,
+    /// the price of bounding memory under a hostile upstream.
     ///
     /// Returns the evicted job's ID, if any, so callers can drop metadata they key by job ID.
-    fn retire_active_to_past(&mut self) -> Option<u32> {
-        let active_job = self.active_job.take()?;
-        let job_id = active_job.get_job_id();
-        self.past_jobs.insert(job_id, active_job);
+    fn retire_to_past(&mut self, job: T) -> Option<u32> {
+        let job_id = job.get_job_id();
+        self.past_jobs.insert(job_id, job);
 
         // a replaced job_id moves to the back of the eviction order
         self.past_job_order.retain(|id| *id != job_id);
@@ -206,21 +205,20 @@ impl<T: Job> JobStore<T> {
     /// so callers can drop metadata they key by job ID (e.g. the per-job target mapping of
     /// standard and extended channels).
     pub fn add_active_job(&mut self, job: T) -> Option<u32> {
-        // Move currently active job to past jobs (so it can be marked as stale)
-        let evicted_job_id = self.retire_active_to_past();
         let job_id = job.get_job_id();
         // an ID names one job: a stale or past namesake is dropped, as share validation
         // resolves the active job first and would never reach it
         self.stale_jobs.remove(&job_id);
-        let dropped_past_namesake = self.past_jobs.remove(&job_id).is_some();
-        if dropped_past_namesake {
+        // the new job is installed before the displaced one is retired: retirement may prune
+        // retired extranonce prefixes, and the new job is a live user of its bytes
+        let evicted_job_id = match self.active_job.replace(job) {
+            Some(displaced_job) => self.retire_to_past(displaced_job),
+            None => None,
+        };
+        // the displaced job may itself carry the new job's ID, so the past namesake is dropped
+        // only now; it may have been the last one holding a retired extranonce prefix alive
+        if self.past_jobs.remove(&job_id).is_some() {
             self.past_job_order.retain(|id| *id != job_id);
-        }
-        // Set the new active job
-        self.active_job = Some(job);
-        // the dropped namesake may have been the last one holding a retired extranonce prefix
-        // alive; release such slots now rather than at the next chain transition
-        if dropped_past_namesake {
             self.prune_retired_extranonce_prefixes();
         }
         evicted_job_id
@@ -695,6 +693,43 @@ mod tests {
         assert_eq!(store.add_active_job(DummyJob { job_id: 4 }), Some(2));
         assert!(store.get_past_job(1).is_some());
         assert!(store.get_past_job(3).is_some());
+    }
+
+    #[test]
+    fn install_keeps_retired_prefix_of_the_installed_job() {
+        // add_active_job may evict a past job and prune retired prefixes; the job being
+        // installed is a live user of its prefix bytes, so it must be in place when that prune
+        // runs, or a retired prefix sharing those bytes (an allocator recreated over the same
+        // extranonce space) would be released while the job goes on to accept shares under them
+        let mut store = JobStore::new(1);
+        // the allocator outlives the test, so the retired prefix keeps holding its slot
+        let mut allocator = ExtranonceAllocator::new(vec![], 1, 2).unwrap();
+        let old_prefix = allocator.allocate_extended(0).unwrap();
+        let old_prefix_bytes = old_prefix.as_bytes().to_vec();
+
+        // job 1 under the old prefix, which is then rotated out; job 2 under another prefix
+        // pushes job 1 into past jobs
+        store.add_active_job(PrefixedJob {
+            job_id: 1,
+            prefix: old_prefix_bytes.clone(),
+        });
+        store.retire_extranonce_prefix(old_prefix.into());
+        store.add_active_job(PrefixedJob {
+            job_id: 2,
+            prefix: vec![2u8],
+        });
+        assert_eq!(store.retired_extranonce_prefixes.len(), 1);
+
+        // installing job 3 under the old prefix's bytes evicts job 1, the last past job under
+        // them; job 3 itself keeps the retired prefix alive
+        assert_eq!(
+            store.add_active_job(PrefixedJob {
+                job_id: 3,
+                prefix: old_prefix_bytes,
+            }),
+            Some(1)
+        );
+        assert_eq!(store.retired_extranonce_prefixes.len(), 1);
     }
 
     #[test]
