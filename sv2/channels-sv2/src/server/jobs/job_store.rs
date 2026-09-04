@@ -45,6 +45,13 @@ pub(crate) const MAX_PAST_JOBS: usize = 16;
 ///
 /// Maintains collections for future, active, past, and stale jobs, and tracks template-to-job ID
 /// mappings for future job activation.
+///
+/// Job IDs come from whichever factory built the job, the channel's own or its group channel's,
+/// so an ID can repeat within one channel. A job installed under the ID of a stale job replaces
+/// it: an ID names either a live job or a stale one, never both, and a late share for the
+/// dropped namesake is validated against the live job, as the store cannot tell the two apart.
+/// A job installed or retiring under the ID of a past job replaces that one likewise: share
+/// validation resolves the active job first, so the namesake would never be reached.
 #[derive(Debug)]
 pub(crate) struct JobStore<T: Job> {
     future_template_to_job_id: HashMap<u64, u32>,
@@ -156,8 +163,8 @@ impl<T: Job> JobStore<T> {
         let job_id = active_job.get_job_id();
         self.past_jobs.insert(job_id, active_job);
 
-        // job IDs are minted by the job factory, strictly monotonic per channel, so a retiring
-        // ID can never already be in the eviction order
+        // a replaced job_id moves to the back of the eviction order
+        self.past_job_order.retain(|id| *id != job_id);
         self.past_job_order.push_back(job_id);
 
         if self.past_jobs.len() > self.max_past_jobs {
@@ -186,8 +193,8 @@ impl<T: Job> JobStore<T> {
             let job_id = active_job.get_job_id();
             self.past_jobs.insert(job_id, active_job);
 
-            // job IDs are minted by the job factory, strictly monotonic per channel, so a
-            // retiring ID can never already be in the eviction order
+            // a replaced job_id moves to the back of the eviction order
+            self.past_job_order.retain(|id| *id != job_id);
             self.past_job_order.push_back(job_id);
         }
     }
@@ -201,8 +208,21 @@ impl<T: Job> JobStore<T> {
     pub fn add_active_job(&mut self, job: T) -> Option<u32> {
         // Move currently active job to past jobs (so it can be marked as stale)
         let evicted_job_id = self.retire_active_to_past();
+        let job_id = job.get_job_id();
+        // an ID names one job: a stale or past namesake is dropped, as share validation
+        // resolves the active job first and would never reach it
+        self.stale_jobs.remove(&job_id);
+        let dropped_past_namesake = self.past_jobs.remove(&job_id).is_some();
+        if dropped_past_namesake {
+            self.past_job_order.retain(|id| *id != job_id);
+        }
         // Set the new active job
         self.active_job = Some(job);
+        // the dropped namesake may have been the last one holding a retired extranonce prefix
+        // alive; release such slots now rather than at the next chain transition
+        if dropped_past_namesake {
+            self.prune_retired_extranonce_prefixes();
+        }
         evicted_job_id
     }
 
@@ -260,12 +280,16 @@ impl<T: Job> JobStore<T> {
 
         // Activate the future job
         future_job.activate(prev_hash_header_timestamp);
+        let activated_job_id = future_job.get_job_id();
         self.active_job = Some(future_job);
         self.future_jobs.clear();
         self.future_template_to_job_id.clear();
         self.future_template_order.clear();
 
         self.mark_past_jobs_as_stale();
+        // the activated job may reuse the ID of a job that just went stale; an ID names either
+        // a live job or a stale one, never both
+        self.stale_jobs.remove(&activated_job_id);
 
         true
     }
@@ -628,5 +652,67 @@ mod tests {
         assert!(store.retired_extranonce_prefixes.is_empty());
         store.retire_extranonce_prefix(ExtranoncePrefix::from_wire(prefix).unwrap());
         assert!(store.retired_extranonce_prefixes.is_empty());
+    }
+
+    #[test]
+    fn a_job_installed_under_a_stale_id_replaces_the_stale_job() {
+        // job IDs come from whichever factory built the job, so a job can arrive under the ID of
+        // a job that went stale on the last tip transition, whether installed directly or
+        // activated from the future set; the stale namesake is dropped either way
+        let mut store = JobStore::new(MAX_PAST_JOBS);
+        store.add_active_job(DummyJob { job_id: 1 });
+        store.deactivate_job();
+        store.mark_past_jobs_as_stale();
+        assert!(store.get_stale_job(1).is_some());
+
+        store.add_active_job(DummyJob { job_id: 1 });
+        assert_eq!(store.get_active_job().unwrap().get_job_id(), 1);
+        assert!(store.get_stale_job(1).is_none());
+
+        // the displaced job goes stale under the very ID the activated job carries
+        store.add_future_job(7, DummyJob { job_id: 1 });
+        assert!(store.activate_future_job(7, 0));
+        assert_eq!(store.get_active_job().unwrap().get_job_id(), 1);
+        assert!(store.get_stale_job(1).is_none());
+        assert!(store.stale_jobs.is_empty());
+    }
+
+    #[test]
+    fn a_job_retiring_under_a_past_id_replaces_the_past_job() {
+        // the eviction order must not hold an ID twice, or the cap would evict the newer job
+        // early and later pop an ID that no longer maps to anything
+        let mut store = JobStore::new(2);
+        store.add_active_job(DummyJob { job_id: 1 });
+        store.add_active_job(DummyJob { job_id: 2 });
+        store.add_active_job(DummyJob { job_id: 1 });
+
+        // past: {1, 2}, active: 1; retiring it again overwrites past job 1
+        assert_eq!(store.add_active_job(DummyJob { job_id: 3 }), None);
+        assert_eq!(store.past_job_order, VecDeque::from(vec![2, 1]));
+        assert_eq!(store.past_jobs.len(), 2);
+
+        // the cap evicts 2, the oldest, rather than the re-retired 1
+        assert_eq!(store.add_active_job(DummyJob { job_id: 4 }), Some(2));
+        assert!(store.get_past_job(1).is_some());
+        assert!(store.get_past_job(3).is_some());
+    }
+
+    #[test]
+    fn a_job_installed_under_a_past_id_replaces_the_past_job() {
+        // share validation resolves the active job first, so a past job sharing the new active
+        // job's ID would be unreachable while still occupying a max_past_jobs slot
+        let mut store = JobStore::new(3);
+        store.add_active_job(DummyJob { job_id: 2 });
+        store.add_active_job(DummyJob { job_id: 1 });
+        store.add_active_job(DummyJob { job_id: 3 });
+        assert!(store.get_past_job(1).is_some());
+
+        // past: {2, 1}, active: 3; installing job 1 again drops the past namesake, and the
+        // retiring job 3 fits the cap, so nothing is evicted
+        assert_eq!(store.add_active_job(DummyJob { job_id: 1 }), None);
+        assert!(store.get_past_job(1).is_none());
+        assert_eq!(store.get_active_job().unwrap().get_job_id(), 1);
+        assert_eq!(store.past_job_order, VecDeque::from(vec![2, 3]));
+        assert_eq!(store.past_jobs.len(), 2);
     }
 }

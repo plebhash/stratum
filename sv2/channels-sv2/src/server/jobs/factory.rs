@@ -72,9 +72,9 @@ impl JobIdFactory {
     /// practice: future jobs are consumed on activation and past/stale jobs are flushed on
     /// every chain-tip transition, so a wrapped ID can only land on a still-tracked job (the
     /// stale set retained from the previous tip) if all 2³² allocations happen within a single
-    /// tip epoch — orders of magnitude beyond any realistic job rate. Even then, share
-    /// validation checks the stale set first, so the collision degrades to stale-share
-    /// rejections that clear at the next transition.
+    /// tip epoch — orders of magnitude beyond any realistic job rate. Even then, the job store
+    /// drops the stale namesake in favor of the new job (see `JobStore`), so the collision only
+    /// changes the error code the stale job's late shares are rejected with.
     fn next(&mut self) -> u32 {
         self.state = self.state.wrapping_add(1);
         self.state

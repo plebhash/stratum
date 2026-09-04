@@ -586,15 +586,14 @@ impl ExtendedChannel {
                             )
                             .map_err(ExtendedChannelError::JobFactoryError)?;
 
-                        // associate the new active job with the current target
-                        self.job_id_to_target
-                            .insert(new_job.get_job_id(), self.target);
-
+                        let job_id = new_job.get_job_id();
                         // add the new active job to the job store, dropping the evicted past
-                        // job's target mapping (its shares degrade to InvalidJobId)
+                        // job's target mapping (its shares degrade to InvalidJobId) before the
+                        // new job's is recorded, as the evicted job may carry the same ID
                         if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
                             self.job_id_to_target.remove(&evicted_job_id);
                         }
+                        self.job_id_to_target.insert(job_id, self.target);
                     }
                 }
             }
@@ -646,13 +645,14 @@ impl ExtendedChannel {
                     }
                 }
 
-                self.job_id_to_target
-                    .insert(extended_job.get_job_id(), self.target);
-                // dropping the evicted past job's target mapping (its shares degrade to
-                // InvalidJobId)
+                let job_id = extended_job.get_job_id();
+                // the evicted past job's target mapping is dropped (its shares degrade to
+                // InvalidJobId) before the new job's is recorded, as the evicted job may carry
+                // the same ID
                 if let Some(evicted_job_id) = self.job_store.add_active_job(extended_job) {
                     self.job_id_to_target.remove(&evicted_job_id);
                 }
+                self.job_id_to_target.insert(job_id, self.target);
             }
         }
 
@@ -4162,6 +4162,136 @@ mod tests {
     }
 
     #[test]
+    fn test_group_job_reusing_a_stale_job_id_replaces_the_stale_job() {
+        // Job IDs come from whichever factory built the job: the channel's own factory at open,
+        // the group channel's afterwards. A group job can thus arrive under the ID of a job that
+        // went stale on the last tip transition; the stale namesake is dropped and shares for
+        // the ID validate against the live job.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            max_target,
+            1.0,
+            true,
+            8u16,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // permissive channel target, so that acceptance only hinges on job resolution
+        channel.set_target(max_target).unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let n_bits = 453040064;
+        let tip_ntime = 1745596910;
+        let prev_hash: U256 = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        channel.set_chain_tip(ChainTip::new(prev_hash, n_bits, tip_ntime));
+
+        // the channel's own factory mints job 1
+        channel
+            .on_new_template(template.clone(), coinbase_reward_outputs.clone())
+            .unwrap();
+        assert_eq!(channel.get_active_job().unwrap().get_job_id(), 1);
+
+        // a tip transition with no future job queued retires it as stale
+        let next_prev_hash: U256 = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
+        let next_tip_ntime = tip_ntime + 600;
+        channel
+            .on_set_new_prev_hash(SetNewPrevHash {
+                template_id: 999,
+                prev_hash: next_prev_hash.clone(),
+                header_timestamp: next_tip_ntime,
+                n_bits,
+                target: [0xff; 32].into(),
+            })
+            .unwrap();
+        let share = |sequence_number: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 0,
+            ntime: next_tip_ntime,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.validate_share(share(0)),
+            Err(ShareValidationError::Stale(_))
+        ));
+
+        // a fresh group factory mints its job 1 under the new tip
+        let mut group_job_factory = crate::server::jobs::factory::JobFactory::new(true, None, None);
+        let group_job = group_job_factory
+            .new_extended_job(
+                99,
+                Some(ChainTip::new(next_prev_hash, n_bits, next_tip_ntime)),
+                vec![],
+                template,
+                coinbase_reward_outputs,
+                channel.get_full_extranonce_size(),
+            )
+            .unwrap();
+        assert_eq!(group_job.get_job_id(), 1);
+        channel.on_group_channel_job(group_job).unwrap();
+
+        // ID 1 names the group job only: shares for it are validated, not rejected as stale
+        assert_eq!(channel.get_active_job().unwrap().get_job_id(), 1);
+        assert!(matches!(
+            channel.validate_share(share(1)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+    }
+
+    #[test]
     fn test_repeated_prev_hash_keeps_seen_shares() {
         // Template and job IDs are not committed into the block header, so a non-conforming
         // Template Provider can queue an identical future template under a new template_id and
@@ -4272,5 +4402,114 @@ mod tests {
             Err(ShareValidationError::DuplicateShare(_))
         ));
         assert_eq!(channel.get_share_accounting().get_shares_accepted(), 1);
+    }
+
+    #[test]
+    fn test_reused_job_id_evicted_from_past_jobs_keeps_the_active_job_target() {
+        // The channel's own factory and its group channel's both count from 1, so the job the
+        // channel's factory mints can share its ID with the past job that its installation
+        // evicts. The target mapping of the new job must survive that eviction, or every share
+        // for the current job is rejected as InvalidJobId until the next job arrives.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            max_target,
+            1.0,
+            true,
+            8u16,
+            100,
+            1.0,
+            None,
+            None,
+            Some(2),
+        )
+        .unwrap();
+        // permissive channel target, so that acceptance only hinges on job resolution
+        channel.set_target(max_target).unwrap();
+
+        let template = |template_id: u64| NewTemplate {
+            template_id,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let n_bits = 453040064;
+        let tip_ntime = 1745596910;
+        let prev_hash: U256 = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        channel.set_chain_tip(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime));
+
+        // group jobs 1, 2 and 3 fill the channel: 3 is active, 1 and 2 are past
+        let mut group_job_factory = crate::server::jobs::factory::JobFactory::new(true, None, None);
+        for template_id in 1..=3 {
+            let group_job = group_job_factory
+                .new_extended_job(
+                    99,
+                    Some(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime)),
+                    vec![],
+                    template(template_id),
+                    coinbase_reward_outputs.clone(),
+                    channel.get_full_extranonce_size(),
+                )
+                .unwrap();
+            channel.on_group_channel_job(group_job).unwrap();
+        }
+        assert_eq!(channel.get_active_job().unwrap().get_job_id(), 3);
+
+        // the channel's own factory mints job 1; installing it evicts group job 1
+        channel
+            .on_new_template(template(4), coinbase_reward_outputs)
+            .unwrap();
+        assert_eq!(channel.get_active_job().unwrap().get_job_id(), 1);
+
+        let share = SubmitSharesExtended {
+            channel_id,
+            sequence_number: 0,
+            job_id: 1,
+            nonce: 0,
+            ntime: tip_ntime,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.validate_share(share),
+            Ok(ShareValidationResult::Valid(_))
+        ));
     }
 }
