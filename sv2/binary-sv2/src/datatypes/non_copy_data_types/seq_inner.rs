@@ -775,6 +775,11 @@ impl<'a, T: 'a> Sv2Option<'a, T> {
             _ => unreachable!(),
         }
     }
+
+    /// Borrows the inner value of Sv2Option, if present, like [`Option::as_ref`].
+    pub fn as_ref(&self) -> Option<&T> {
+        self.0.first()
+    }
 }
 
 impl<T> Sv2OptionOwned<T> {
@@ -807,6 +812,11 @@ impl<T> Sv2OptionOwned<T> {
             _ => unreachable!(),
         }
     }
+
+    /// Borrows the inner value of Sv2OptionOwned, if present, like [`Option::as_ref`].
+    pub fn as_ref(&self) -> Option<&T> {
+        self.0.first()
+    }
 }
 
 impl<T: GetSize> GetSize for Sv2Option<'_, T> {
@@ -832,6 +842,16 @@ impl<T: GetSize> GetSize for Sv2OptionOwned<T> {
 #[cfg(test)]
 mod test {
     use crate::{Decodable, Seq064K};
+
+    #[test]
+    fn sv2_option_as_ref_borrows_the_inner_value() {
+        use super::{Sv2Option, Sv2OptionOwned};
+
+        assert_eq!(Sv2OptionOwned::new(Some(7u32)).as_ref(), Some(&7));
+        assert_eq!(Sv2OptionOwned::<u32>::new(None).as_ref(), None);
+        assert_eq!(Sv2Option::new(Some(7u32)).as_ref(), Some(&7));
+        assert_eq!(Sv2Option::<u32>::new(None).as_ref(), None);
+    }
 
     #[test]
     fn seq_of_b032_encodes() {
