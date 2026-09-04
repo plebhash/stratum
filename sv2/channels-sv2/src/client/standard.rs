@@ -33,14 +33,17 @@ use mining_sv2::{
 };
 use tracing::debug;
 
-/// A type alias representing a standard mining job tied to a specific `extranonce_prefix` and
-/// target.
-///
-/// Each job includes:
-/// - A [`NewMiningJob`](mining_sv2::NewMiningJob) message
-/// - The `extranonce_prefix` in use when the job was created
-/// - The target of the job
-pub type StandardJob = (NewMiningJobOwned, Vec<u8>, Target);
+/// A standard mining job as tracked by a client [`StandardChannel`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct StandardJob {
+    /// The [`NewMiningJob`](mining_sv2::NewMiningJob) message the job was created from, with
+    /// `min_ntime` set once the job is activated.
+    pub job_message: NewMiningJobOwned,
+    /// The `extranonce_prefix` in use when the job was created.
+    pub extranonce_prefix: Vec<u8>,
+    /// The target the job's shares are validated against.
+    pub target: Target,
+}
 
 /// Mining Client abstraction over the state of a Sv2 Standard Channel.
 ///
@@ -184,7 +187,7 @@ impl StandardChannel {
                 .values()
                 .chain(self.active_job.iter())
                 .chain(self.past_jobs.values())
-                .map(|job| job.1.as_slice()),
+                .map(|job| job.extranonce_prefix.as_slice()),
         );
 
         Ok(())
@@ -230,7 +233,7 @@ impl StandardChannel {
 
         self.target = target;
         for future_job in self.future_jobs.values_mut() {
-            future_job.2 = target;
+            future_job.target = target;
         }
 
         Ok(())
@@ -386,11 +389,11 @@ impl StandardChannel {
                 self.stale_jobs.remove(&new_mining_job.job_id);
                 // the new job is installed before the displaced one is retired: retirement may
                 // prune retired extranonce prefixes, and the new job is a live user of its bytes
-                let displaced_job = self.active_job.replace((
-                    new_mining_job,
-                    self.extranonce_prefix.as_bytes().to_vec(),
-                    self.target,
-                ));
+                let displaced_job = self.active_job.replace(StandardJob {
+                    job_message: new_mining_job,
+                    extranonce_prefix: self.extranonce_prefix.as_bytes().to_vec(),
+                    target: self.target,
+                });
                 if let Some(displaced_job) = displaced_job {
                     self.retire_job_to_past(displaced_job);
                 }
@@ -399,11 +402,11 @@ impl StandardChannel {
                 let job_id = new_mining_job.job_id;
                 self.future_jobs.insert(
                     job_id,
-                    (
-                        new_mining_job,
-                        self.extranonce_prefix.as_bytes().to_vec(),
-                        self.target,
-                    ),
+                    StandardJob {
+                        job_message: new_mining_job,
+                        extranonce_prefix: self.extranonce_prefix.as_bytes().to_vec(),
+                        target: self.target,
+                    },
                 );
 
                 // a replaced job_id moves to the back of the eviction order
@@ -431,7 +434,7 @@ impl StandardChannel {
     // though it would otherwise have been accepted and propagated: a bounded loss of
     // creditable work, the price of bounding memory under a hostile upstream.
     fn retire_job_to_past(&mut self, job: StandardJob) {
-        let job_id = job.0.job_id;
+        let job_id = job.job_message.job_id;
         self.past_jobs.insert(job_id, job);
 
         // a replaced job_id moves to the back of the eviction order
@@ -459,7 +462,7 @@ impl StandardChannel {
                 .values()
                 .chain(self.active_job.iter())
                 .chain(self.past_jobs.values())
-                .map(|job| job.1.as_slice()),
+                .map(|job| job.extranonce_prefix.as_slice()),
         );
     }
 
@@ -481,7 +484,8 @@ impl StandardChannel {
         // that the JobIdNotFound path below does not corrupt channel state
         let previously_active_job = match self.future_jobs.remove(&set_new_prev_hash.job_id) {
             Some(mut activated_job) => {
-                activated_job.0.min_ntime = Sv2OptionOwned::new(Some(set_new_prev_hash.min_ntime));
+                activated_job.job_message.min_ntime =
+                    Sv2OptionOwned::new(Some(set_new_prev_hash.min_ntime));
                 self.active_job.replace(activated_job)
             }
             None => return Err(StandardChannelError::JobIdNotFound),
@@ -499,8 +503,10 @@ impl StandardChannel {
         // the capped past path would push the oldest past job out of the stale set, and a
         // late share for either job would be rejected as InvalidJobId instead of Stale
         if let Some(previously_active_job) = previously_active_job {
-            self.stale_jobs
-                .insert(previously_active_job.0.job_id, previously_active_job);
+            self.stale_jobs.insert(
+                previously_active_job.job_message.job_id,
+                previously_active_job,
+            );
         }
 
         // the activated job may reuse the ID of a job that just went stale; an ID names either
@@ -554,7 +560,7 @@ impl StandardChannel {
         let is_active_job = self
             .active_job
             .as_ref()
-            .is_some_and(|job| job.0.job_id == job_id);
+            .is_some_and(|job| job.job_message.job_id == job_id);
 
         // check if job_id is past job
         let is_past_job = self.past_jobs.contains_key(&job_id);
@@ -578,7 +584,7 @@ impl StandardChannel {
             ));
         };
 
-        let merkle_root = job.0.merkle_root.to_array();
+        let merkle_root = job.job_message.merkle_root.to_array();
 
         let chain_tip = self
             .chain_tip
@@ -594,7 +600,7 @@ impl StandardChannel {
         // message advertised. Every active or past job carries one: a job without it is a
         // future job, which is never mined on.
         let job_min_ntime = job
-            .0
+            .job_message
             .min_ntime
             .as_ref()
             .copied()
@@ -619,7 +625,9 @@ impl StandardChannel {
         // the BIP323 general-purpose bits the miner may change, so any remaining difference
         // from the job's advertised version means an unauthorized change. Standard channels
         // always allow version rolling within the mask.
-        if (share.version & !VERSION_ROLLING_MASK) != (job.0.version & !VERSION_ROLLING_MASK) {
+        if (share.version & !VERSION_ROLLING_MASK)
+            != (job.job_message.version & !VERSION_ROLLING_MASK)
+        {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_NON_ROLLABLE_VERSION_BIT,
             ));
@@ -642,7 +650,7 @@ impl StandardChannel {
         let share_hash_as_diff = share_hash_target.difficulty_float();
         let network_target = Target::from_compact(nbits);
 
-        let job_target = job.2;
+        let job_target = job.target;
 
         // print hash_as_target and self.target as human readable hex
         let share_hash_target_bytes = share_hash_target.to_be_bytes();
@@ -705,6 +713,7 @@ impl StandardChannel {
 
 #[cfg(test)]
 mod tests {
+    use super::StandardJob;
     use crate::{
         client::{
             error::StandardChannelError,
@@ -783,11 +792,11 @@ mod tests {
 
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                previously_future_job,
+            Some(&StandardJob {
+                job_message: previously_future_job,
                 extranonce_prefix,
-                channel.get_target().clone()
-            ))
+                target: channel.get_target().clone()
+            })
         );
     }
 
@@ -1065,11 +1074,11 @@ mod tests {
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                active_job.clone(),
-                extranonce_prefix.clone(),
-                channel.get_target().clone()
-            ))
+            Some(&StandardJob {
+                job_message: active_job.clone(),
+                extranonce_prefix: extranonce_prefix.clone(),
+                target: channel.get_target().clone()
+            })
         );
         assert_eq!(channel.get_past_jobs_count(), 0);
 
@@ -1080,11 +1089,11 @@ mod tests {
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                new_active_job,
+            Some(&StandardJob {
+                job_message: new_active_job,
                 extranonce_prefix,
-                channel.get_target().clone()
-            ))
+                target: channel.get_target().clone()
+            })
         );
         assert_eq!(channel.get_past_jobs_count(), 1);
     }
@@ -1705,7 +1714,7 @@ mod tests {
             }),
             Err(StandardChannelError::JobIdNotFound)
         ));
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
         assert_eq!(channel.get_stale_jobs_count(), 0);
 
         channel
@@ -1719,7 +1728,7 @@ mod tests {
             .unwrap();
 
         // job 1 was active under the previous chain tip, so it is now stale
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 2);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 2);
         assert_eq!(channel.get_stale_jobs_count(), 1);
         assert!(channel.get_stale_job(1).is_some());
         assert_eq!(channel.get_past_jobs_count(), 0);
@@ -1800,7 +1809,10 @@ mod tests {
             assert!(channel.get_stale_job(job_id).is_some());
         }
         assert_eq!(channel.get_past_jobs_count(), 0);
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, future_job_id);
+        assert_eq!(
+            channel.get_active_job().unwrap().job_message.job_id,
+            future_job_id
+        );
     }
 
     #[test]
@@ -2091,7 +2103,7 @@ mod tests {
             .unwrap();
 
         // ID 1 names the activated job only: its displaced namesake is gone from the stale set
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
         assert!(channel.get_stale_job(1).is_none());
         assert_eq!(channel.get_stale_jobs_count(), 0);
 
@@ -2130,7 +2142,7 @@ mod tests {
         assert!(channel.get_stale_job(1).is_some());
         channel.on_new_mining_job(job(Some(1745596990))).unwrap();
 
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
         assert!(channel.get_stale_job(1).is_none());
         assert!(matches!(
             channel.validate_share(share(1, 1745596990)),
@@ -2182,7 +2194,10 @@ mod tests {
         channel
             .on_new_mining_job(job_template(1, Some(1745596970)))
             .unwrap();
-        assert_eq!(channel.get_active_job().unwrap().1, prefix_1_bytes);
+        assert_eq!(
+            channel.get_active_job().unwrap().extranonce_prefix,
+            prefix_1_bytes
+        );
 
         // rotate the channel onto the second prefix, while the job above is still live
         channel.set_extranonce_prefix(prefix_2.into()).unwrap();
@@ -2207,7 +2222,10 @@ mod tests {
         ));
 
         // and the pre-rotation job is still live under the old prefix bytes
-        assert_eq!(channel.get_active_job().unwrap().1, prefix_1_bytes);
+        assert_eq!(
+            channel.get_active_job().unwrap().extranonce_prefix,
+            prefix_1_bytes
+        );
     }
 
     #[test]
@@ -2354,7 +2372,7 @@ mod tests {
             Err(StandardChannelError::InvalidTarget)
         ));
         assert_eq!(channel.get_target(), &target);
-        assert_eq!(channel.get_future_job(1).unwrap().2, target);
+        assert_eq!(channel.get_future_job(1).unwrap().target, target);
     }
 
     #[test]
@@ -2396,7 +2414,7 @@ mod tests {
             channel.on_new_mining_job(job_template(2, Some(tip_ntime - 1))),
             Err(StandardChannelError::JobMinNtimeBelowChainTip)
         ));
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
         assert_eq!(channel.get_past_jobs_count(), 0);
 
         let group_job = NewExtendedMiningJob {
@@ -2426,11 +2444,11 @@ mod tests {
             channel.on_new_group_channel_job(group_job),
             Err(StandardChannelError::JobMinNtimeBelowChainTip)
         ));
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
 
         channel
             .on_new_mining_job(job_template(3, Some(tip_ntime)))
             .unwrap();
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 3);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 3);
     }
 }
