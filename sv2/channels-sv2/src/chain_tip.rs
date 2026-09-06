@@ -12,7 +12,7 @@ use template_distribution_sv2::{
 /// Used for:
 /// - creating non-future jobs
 /// - validating shares.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainTip {
     prev_hash: U256Owned,
     nbits: u32,

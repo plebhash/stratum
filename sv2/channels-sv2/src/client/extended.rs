@@ -196,8 +196,17 @@ impl ExtendedChannel {
     }
 
     /// Sets the [`ChainTip`].
+    ///
+    /// A first tip only initializes the channel, and setting the current tip again changes
+    /// nothing. Replacing the tip with a different one is a chain-tip transition, handled as in
+    /// [`on_chain_tip_update`](Self::on_chain_tip_update): the jobs built under the previous tip
+    /// go stale rather than stay validatable against a header the miner was never assigned.
     pub fn set_chain_tip(&mut self, chain_tip: ChainTip) {
-        self.chain_tip = Some(chain_tip);
+        match &self.chain_tip {
+            None => self.chain_tip = Some(chain_tip),
+            Some(current) if *current == chain_tip => {}
+            Some(_) => self.update_chain_tip(chain_tip),
+        }
     }
 
     /// Sets a new extranonce prefix for the channel.
@@ -626,6 +635,14 @@ impl ExtendedChannel {
     ///   be rejected as stale; a repeated `prev_hash` keeps them, see
     ///   [`ShareAccounting::flush_seen_shares`].
     pub fn on_chain_tip_update(&mut self, chain_tip: ChainTip) -> Result<(), ExtendedChannelError> {
+        self.update_chain_tip(chain_tip);
+        Ok(())
+    }
+
+    // Moves the channel onto `chain_tip`: future jobs are dropped, the active and past jobs go
+    // stale, retired extranonce prefixes are pruned and seen shares are flushed if `prev_hash`
+    // changed.
+    fn update_chain_tip(&mut self, chain_tip: ChainTip) {
         let is_new_prev_hash = self
             .chain_tip
             .as_ref()
@@ -637,7 +654,8 @@ impl ExtendedChannel {
         self.future_job_order.clear();
 
         // mark all past jobs as stale, so that shares are not propagated
-        self.stale_jobs = self.past_jobs.clone();
+        self.stale_jobs = core::mem::take(&mut self.past_jobs);
+        self.past_job_order.clear();
 
         // the previously active job belongs to the old chain tip, so it goes stale with them.
         // without this, a share arriving before the next SetCustomMiningJobSuccess would still
@@ -650,10 +668,6 @@ impl ExtendedChannel {
                 .insert(active_job.job_message.job_id, active_job);
         }
 
-        // clear past jobs, as we're no longer going to propagate shares for them
-        self.past_jobs.clear();
-        self.past_job_order.clear();
-
         // the jobs that just went stale can no longer accept shares, so any retired extranonce
         // prefix they were the last reference to is now releasable
         self.prune_retired_extranonce_prefixes();
@@ -662,8 +676,6 @@ impl ExtendedChannel {
         if is_new_prev_hash {
             self.share_accounting.flush_seen_shares();
         }
-
-        Ok(())
     }
 
     /// Handles a [`SetNewPrevHash`](SetNewPrevHashMp) message from upstream.
@@ -700,7 +712,8 @@ impl ExtendedChannel {
         self.future_job_order.clear();
 
         // mark all past jobs as stale, so that shares are not propagated
-        self.stale_jobs = self.past_jobs.clone();
+        self.stale_jobs = core::mem::take(&mut self.past_jobs);
+        self.past_job_order.clear();
 
         // the job that was active under the previous chain tip goes stale with them rather
         // than being silently dropped, bypassing the MAX_PAST_JOBS cap: retiring it through
@@ -716,10 +729,6 @@ impl ExtendedChannel {
         // the activated job may reuse the ID of a job that just went stale; an ID names either
         // a live job or a stale one, never both
         self.stale_jobs.remove(&set_new_prev_hash.job_id);
-
-        // clear past jobs, as we're no longer going to propagate shares for them
-        self.past_jobs.clear();
-        self.past_job_order.clear();
 
         // the jobs that just went stale can no longer accept shares, so any retired extranonce
         // prefix they were the last reference to is now releasable
@@ -3331,5 +3340,84 @@ mod tests {
         at_tip.min_ntime = Sv2Option::new(Some(tip_ntime));
         channel.on_new_extended_mining_job(at_tip).unwrap();
         assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 3);
+    }
+
+    #[test]
+    fn test_set_chain_tip_replacement_retires_the_jobs_of_the_previous_tip() {
+        // Shares are hashed against the channel's current tip, so a job built under a tip that
+        // set_chain_tip replaces must go stale, as it does on the message-driven transitions:
+        // otherwise a late share for it would be validated against a header the miner was never
+        // assigned. Re-setting the current tip changes nothing.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let nbits = 453040064;
+        let first_tip = ChainTip::new(
+            [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            nbits,
+            1745596970,
+        );
+        channel.set_chain_tip(first_tip.clone());
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+
+        let share = |sequence_number: u32, nonce: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce,
+            ntime: 1745596970,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.validate_share(share(0, 0)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // the current tip again is not a transition: the job stays active
+        channel.set_chain_tip(first_tip);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
+        assert!(matches!(
+            channel.validate_share(share(1, 1)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // a different prev_hash retires the job: its late share is stale, not re-hashed
+        channel.set_chain_tip(ChainTip::new(
+            [
+                154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73,
+                34, 0, 162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+            ]
+            .into(),
+            nbits,
+            1745596980,
+        ));
+        assert!(channel.get_active_job().is_none());
+        assert!(channel.get_stale_job(1).is_some());
+        assert!(matches!(
+            channel.validate_share(share(2, 0)),
+            Err(ShareValidationError::Stale(_))
+        ));
     }
 }
