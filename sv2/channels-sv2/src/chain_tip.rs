@@ -12,6 +12,12 @@ use template_distribution_sv2::{
 /// Used for:
 /// - creating non-future jobs
 /// - validating shares.
+///
+/// Only `prev_hash`, `nbits` and the minimum `nTime` are carried. The Template Distribution
+/// `SetNewPrevHash.target`, which a Template Provider may set below the target `nbits` encodes
+/// (weak-block propagation), is deliberately not: `channels_sv2` currently does not support
+/// weak-block propagation, so the block-validity threshold is the one `nbits` encodes, and share
+/// validation classifies `BlockFound` against that alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainTip {
     prev_hash: U256Owned,
@@ -45,6 +51,7 @@ impl ChainTip {
     }
 }
 
+/// Converts a Template Distribution `SetNewPrevHash`, dropping its `target` (see [`ChainTip`]).
 impl From<SetNewPrevHashTdpOwned> for ChainTip {
     fn from(set_new_prev_hash: SetNewPrevHashTdpOwned) -> Self {
         Self::new(
@@ -65,6 +72,7 @@ impl From<SetNewPrevHashMpOwned> for ChainTip {
     }
 }
 
+/// Converts a Template Distribution `SetNewPrevHash`, dropping its `target` (see [`ChainTip`]).
 impl From<SetNewPrevHashTdp<'_>> for ChainTip {
     fn from(set_new_prev_hash: SetNewPrevHashTdp) -> Self {
         let set_new_prev_hash_static = set_new_prev_hash.into_owned();

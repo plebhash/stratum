@@ -15,3 +15,7 @@ The `client` module is compatible with `no_std` environments. To enable this mod
 ```bash
 cargo build --features no_std
 ```
+
+## Weak-block propagation
+
+`channels_sv2` currently does not support weak-block propagation. The Template Distribution `SetNewPrevHash.target`, which a Template Provider may set below the target `nBits` encodes, is not carried into the channels' chain tip: server channels classify a share as a found block against the `nBits` target alone.

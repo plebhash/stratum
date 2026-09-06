@@ -712,6 +712,10 @@ impl StandardChannel {
     /// jobs installed via [`on_group_channel_job`](Self::on_group_channel_job) (see
     /// [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
     /// elapsed-time window).
+    ///
+    /// A block is reported when the share hash meets the network target the tip's `nbits`
+    /// encodes; a stricter Template Distribution `SetNewPrevHash.target` is not consulted, as
+    /// [`ChainTip`] does not carry it.
     pub fn validate_share(
         &mut self,
         share: SubmitSharesStandardOwned,
