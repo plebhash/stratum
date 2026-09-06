@@ -85,6 +85,8 @@ use tracing::debug;
 /// - the channel's `user_identity`
 /// - the channel's unique `extranonce_prefix`
 /// - the channel's rollable extranonce size
+/// - whether the channel allows version rolling; a group job allowing it on a channel that does
+///   not is refused (see [`on_group_channel_job`](Self::on_group_channel_job))
 /// - the channel's requested max target (limit established by the client)
 /// - the channel's current target
 /// - the channel's mapping between `job_id` and target
@@ -102,6 +104,7 @@ pub struct ExtendedChannel {
     user_identity: String,
     extranonce_prefix: ExtranoncePrefix,
     rollable_extranonce_size: u16,
+    version_rolling_allowed: bool,
     requested_max_target: Target,
     target: Target,
     job_id_to_target: HashMap<u32, Target>,
@@ -276,6 +279,7 @@ impl ExtendedChannel {
             user_identity,
             extranonce_prefix,
             rollable_extranonce_size,
+            version_rolling_allowed,
             requested_max_target: max_target,
             target,
             job_id_to_target: HashMap::new(),
@@ -613,6 +617,11 @@ impl ExtendedChannel {
     /// A non-future job is mined against this channel's chain tip, so a `min_ntime` below the
     /// tip's (the group channel built it under an older tip than this channel's) is refused with
     /// [`ExtendedChannelError::JobMinNtimeBelowChainTip`], leaving the channel unchanged.
+    ///
+    /// A job that advertises version rolling while this channel's policy forbids it is refused
+    /// with [`ExtendedChannelError::GroupJobVersionRollingNotAllowed`], leaving the channel
+    /// unchanged: the job's flag is what the miner is told and what share validation enforces. A
+    /// job stricter than the channel is imported as is.
     pub fn on_group_channel_job(
         &mut self,
         mut extended_job: ExtendedJob,
@@ -626,6 +635,13 @@ impl ExtendedChannel {
                 return Err(ExtendedChannelError::InvalidJobOrigin);
             }
         };
+
+        // the job's flag is what the miner is told and what validate_share enforces, so a job
+        // permitting rolling on a channel that forbids it would put the policy aside; a stricter
+        // job is fine, as its own flag is enforced
+        if extended_job.version_rolling_allowed() && !self.version_rolling_allowed {
+            return Err(ExtendedChannelError::GroupJobVersionRollingNotAllowed);
+        }
 
         match extended_job.is_future() {
             true => {
@@ -812,6 +828,10 @@ impl ExtendedChannel {
     /// under it, and the group job's own for jobs installed via
     /// [`on_group_channel_job`](Self::on_group_channel_job) (see [`MAX_FUTURE_BLOCK_TIME`] for
     /// how this clockless upper bound relates to the spec's elapsed-time window).
+    ///
+    /// Version rolling is enforced per the job's own `version_rolling_allowed`, which
+    /// [`on_group_channel_job`](Self::on_group_channel_job) keeps no looser than the channel's
+    /// policy.
     ///
     /// A block is reported when the share hash meets the network target the tip's `nbits`
     /// encodes; a stricter Template Distribution `SetNewPrevHash.target` is not consulted, as
@@ -4293,6 +4313,125 @@ mod tests {
             channel.validate_share(share(1)),
             Ok(ShareValidationResult::Valid(_))
         ));
+    }
+
+    #[test]
+    fn test_group_job_looser_than_the_channel_version_rolling_policy_is_rejected() {
+        // The job's flag is what the miner is told and what validate_share enforces, so a group
+        // job permitting version rolling must not enter a channel that forbids it, future or not;
+        // a job as strict as the channel is imported.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            max_target,
+            1.0,
+            false,
+            8u16,
+            100,
+            1.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = |template_id: u64, future_template: bool| NewTemplate {
+            template_id,
+            future_template,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        let n_bits = 453040064;
+        let prev_hash: U256 = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let tip_ntime = 1745596910;
+        channel.set_chain_tip(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime));
+
+        // a group built with rolling allowed feeds a channel that forbids it
+        let mut looser_group_factory =
+            crate::server::jobs::factory::JobFactory::new(true, None, None);
+        let active_job = looser_group_factory
+            .new_extended_job(
+                99,
+                Some(ChainTip::new(prev_hash.clone(), n_bits, tip_ntime)),
+                vec![],
+                template(1, false),
+                coinbase_reward_outputs.clone(),
+                channel.get_full_extranonce_size(),
+            )
+            .unwrap();
+        assert!(active_job.version_rolling_allowed());
+        assert!(matches!(
+            channel.on_group_channel_job(active_job),
+            Err(ExtendedChannelError::GroupJobVersionRollingNotAllowed)
+        ));
+        assert!(channel.get_active_job().is_none());
+
+        let future_job = looser_group_factory
+            .new_extended_job(
+                99,
+                None,
+                vec![],
+                template(2, true),
+                coinbase_reward_outputs.clone(),
+                channel.get_full_extranonce_size(),
+            )
+            .unwrap();
+        assert!(matches!(
+            channel.on_group_channel_job(future_job),
+            Err(ExtendedChannelError::GroupJobVersionRollingNotAllowed)
+        ));
+        assert!(channel.get_future_job_id_from_template_id(2).is_none());
+
+        // a group with the channel's own policy is imported
+        let mut group_factory = crate::server::jobs::factory::JobFactory::new(false, None, None);
+        let active_job = group_factory
+            .new_extended_job(
+                99,
+                Some(ChainTip::new(prev_hash, n_bits, tip_ntime)),
+                vec![],
+                template(3, false),
+                coinbase_reward_outputs,
+                channel.get_full_extranonce_size(),
+            )
+            .unwrap();
+        channel.on_group_channel_job(active_job).unwrap();
+        assert!(!channel.get_active_job().unwrap().version_rolling_allowed());
     }
 
     #[test]
