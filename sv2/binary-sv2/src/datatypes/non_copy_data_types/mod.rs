@@ -42,6 +42,10 @@ pub type MacOwned = InnerOwned<true, 16, 0, 0>;
 /// Type alias for a 32-byte Secp256k1 public key x-coordinate.
 pub type PubKey<'a> = Inner<'a, true, 32, 0, 0>;
 pub type PubKeyOwned = InnerOwned<true, 32, 0, 0>;
+/// Type alias for a 64-byte ElligatorSwift encoded Secp256k1 public key x-coordinate
+/// (see BIP 324), as exchanged during the Noise handshake.
+pub type EllSwiftPubKey<'a> = Inner<'a, true, 64, 0, 0>;
+pub type EllSwiftPubKeyOwned = InnerOwned<true, 64, 0, 0>;
 /// Type alias for a 64-byte cryptographic signature represented using the
 /// `Inner` type with fixed-size configuration.
 pub type Signature<'a> = Inner<'a, true, 64, 0, 0>;
