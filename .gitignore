@@ -2,3 +2,4 @@
 /integration-test-framework
 target/
 .vscode
+AGENTS_CUSTOM.md
