@@ -83,7 +83,14 @@ The SRI project follows an open contributor model, where anyone is welcome to co
 
 2. **Create a Branch**
 
-3. **Commit Your Changes**
+3. **Make Your Changes**
+
+    These guidelines should be kept in mind:
+    - When touching Rust code, make sure the changes have corresponding Rustdocs. Be concise and avoid unnecessary verbosity.
+    - When adding or modifying features, check whether some corresponding documentation on .md files needs to be updated accordingly.
+    - Make sure to run `cargo test`, `cargo clippy`, and `cargo fmt` on your changes.
+
+4. **Commit Your Changes**
 
     These guidelines should be kept in mind:
     - Progressive commit history, with clear separation of concerns.
@@ -93,14 +100,6 @@ The SRI project follows an open contributor model, where anyone is welcome to co
     - If possible, sign your commits with your GPG key.
     - Writing style: [chris.beams.io/posts/git-commit](https://chris.beams.io/posts/git-commit/)
     - Structure: [conventionalcommits.org](https://www.conventionalcommits.org/)
-
-4. **Run Tests, Clippy, and Formatter**
-
-    `cargo test`: this command runs the project's test suite. Ensure that all tests pass without errors.
-
-    `cargo clippy`: Clippy is a linter tool for detecting common mistakes and style issues. Address any warnings or errors reported by Clippy.
-
-    `cargo fmt`: this command formats your code according to the project's style guidelines. Make sure to run this command to ensure consistency in code formatting.
 
 5. **Submit a Pull Request**
 
