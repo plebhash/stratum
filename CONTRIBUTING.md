@@ -81,7 +81,7 @@ The SRI project follows an open contributor model, where anyone is welcome to co
 
 1. **Fork the Repository**
 
-2. **Create a Branch** 
+2. **Create a Branch**
 
 3. **Commit Your Changes**
 
@@ -94,7 +94,7 @@ The SRI project follows an open contributor model, where anyone is welcome to co
     - Writing style: [chris.beams.io/posts/git-commit](https://chris.beams.io/posts/git-commit/)
     - Structure: [conventionalcommits.org](https://www.conventionalcommits.org/)
 
-4. **Run Tests, Clippy, and Formatter:** 
+4. **Run Tests, Clippy, and Formatter**
 
     `cargo test`: this command runs the project's test suite. Ensure that all tests pass without errors.
 
@@ -102,11 +102,15 @@ The SRI project follows an open contributor model, where anyone is welcome to co
 
     `cargo fmt`: this command formats your code according to the project's style guidelines. Make sure to run this command to ensure consistency in code formatting.
 
-5. **Submit a Pull Request:** once you're satisfied with your changes, submit a pull request to the original SRI repository. Provide a clear and concise description of the changes you've made. If your pull request addresses an existing issue, reference the issue number in the description. In order to contribute to the protocol implementation, every PR must be opened against `main` branch.
+5. **Submit a Pull Request**
 
-6. **Review and Iterate** 
+    Once you're satisfied with your changes, submit a pull request to the original SRI repository. Provide a clear and concise description of the changes you've made. If your pull request addresses an existing issue, reference the issue number in the description. In order to contribute to the protocol implementation, every PR must be opened against `main` branch.
 
-7. **Merge and Close:** Once your pull request has been approved and all discussions have been resolved, a project maintainer will merge your changes into the `main` branch. Your contribution will then be officially part of the project. The pull request will be closed, marking the completion of your contribution.
+6. **Review and Iterate**
+
+7. **Merge and Close**
+
+    Once your pull request has been approved and all discussions have been resolved, a project maintainer will merge your changes into the `main` branch. Your contribution will then be officially part of the project. The pull request will be closed, marking the completion of your contribution.
 
 ### Versioning and public dependencies
 
