@@ -172,9 +172,13 @@ impl ShareAccounting {
 
     /// Clears the set of seen share hashes.
     ///
-    /// Should be called on every chain tip update to allow new shares for the new tip. This is
-    /// also what makes the seen-shares budget per-tip: the set only ever holds one chain tip's
-    /// worth of accepted shares.
+    /// Must be called whenever the chain tip's `prev_hash` changes, and only then. Accepted
+    /// hashes are retained for as long as `prev_hash` is unchanged: job and template IDs are not
+    /// committed into the block header, so a job replaced under the same `prev_hash` commits to
+    /// the same header space as its predecessor, and flushing then would let a proof that was
+    /// already credited be credited again under the new job ID. This is also what makes the
+    /// seen-shares budget per-`prev_hash`: the set only ever holds the shares accepted while one
+    /// `prev_hash` was current.
     pub fn flush_seen_shares(&mut self) {
         self.seen_shares.clear();
     }
@@ -260,7 +264,7 @@ impl ShareAccounting {
     ///
     /// The underlying set holds at most `seen_shares_budget` hashes (see
     /// [`is_seen_shares_budget_exhausted`](Self::is_seen_shares_budget_exhausted)) and is flushed
-    /// on every chain-tip transition.
+    /// whenever the chain tip's `prev_hash` changes.
     pub fn is_share_seen(&self, share_hash: Hash) -> bool {
         self.seen_shares.contains(&share_hash)
     }

@@ -12,7 +12,7 @@ use crate::{
         error::ExtendedChannelError,
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
-    extranonce_manager::ExtranoncePrefix,
+    extranonce_manager::{prefix::RetiredExtranoncePrefixes, ExtranoncePrefix},
     merkle_root::merkle_root_from_path,
     target::{bytes_to_hex, u256_to_block_hash},
     MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
@@ -38,14 +38,17 @@ use mining_sv2::{
 };
 use tracing::debug;
 
-/// A type alias representing an extended mining job tied to a specific `extranonce_prefix` and target.
-///
-/// Extended jobs allow Merkle root rolling, providing broader control over the search space.
-/// Each job includes:
-/// - A [`NewExtendedMiningJob`](mining_sv2::NewExtendedMiningJob) message
-/// - The `extranonce_prefix` in use when the job was created
-/// - The target of the job
-pub type ExtendedJob = (NewExtendedMiningJobOwned, Vec<u8>, Target);
+/// An extended mining job as tracked by a client [`ExtendedChannel`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtendedJob {
+    /// The [`NewExtendedMiningJob`](mining_sv2::NewExtendedMiningJob) message the job was created
+    /// from, with `min_ntime` set once the job is activated.
+    pub job_message: NewExtendedMiningJobOwned,
+    /// The `extranonce_prefix` in use when the job was created.
+    pub extranonce_prefix: Vec<u8>,
+    /// The target the job's shares are validated against.
+    pub target: Target,
+}
 
 /// Mining Client abstraction for the state management of an Sv2 Extended Channel.
 ///
@@ -63,9 +66,14 @@ pub type ExtendedJob = (NewExtendedMiningJobOwned, Vec<u8>, Target);
 /// - Past jobs (previously active under the current chain tip, indexed by `job_id`, capped at
 ///   [`MAX_PAST_JOBS`]).
 /// - Stale jobs (previously active and past jobs under the previous chain tip, indexed by
-///   `job_id`).
+///   `job_id`). Upstream job IDs carry no uniqueness guarantee, so a job may be installed under
+///   an ID a stale job holds; an ID names either a live job or a stale one, never both, and the
+///   stale namesake is dropped. A late share for it is then validated against the live job, as
+///   the channel cannot tell the two apart.
 /// - Share accounting for the channel (as tracked by the client).
 /// - The channel's current chain tip.
+/// - Extranonce prefixes rotated out of the channel that live jobs were created under (see
+///   [`set_extranonce_prefix`](Self::set_extranonce_prefix)).
 #[derive(Debug)]
 pub struct ExtendedChannel {
     channel_id: u32,
@@ -93,6 +101,9 @@ pub struct ExtendedChannel {
     max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
+    // extranonce prefixes rotated out of the channel that are still referenced by at least one
+    // job that can accept shares, so that their allocator slots stay reserved
+    retired_extranonce_prefixes: RetiredExtranoncePrefixes,
 }
 
 impl ExtendedChannel {
@@ -100,6 +111,8 @@ impl ExtendedChannel {
     ///
     /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
     /// `Some(0)` both select [`MAX_PAST_JOBS`].
+    ///
+    /// Returns [`ExtendedChannelError::InvalidTarget`] if `target` is zero.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: u32,
@@ -110,7 +123,11 @@ impl ExtendedChannel {
         version_rolling: bool,
         rollable_extranonce_size: u16,
         max_past_jobs: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, ExtendedChannelError> {
+        if target == Target::ZERO {
+            return Err(ExtendedChannelError::InvalidTarget);
+        }
+
         // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
         // would otherwise evict the just-retired job and reject the most common late share
         let max_past_jobs = match max_past_jobs {
@@ -118,7 +135,7 @@ impl ExtendedChannel {
             _ => MAX_PAST_JOBS,
         };
 
-        Self {
+        Ok(Self {
             channel_id,
             user_identity,
             extranonce_prefix,
@@ -135,7 +152,8 @@ impl ExtendedChannel {
             max_past_jobs,
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
-        }
+            retired_extranonce_prefixes: RetiredExtranoncePrefixes::default(),
+        })
     }
 
     /// Returns the unique `channel_id` of this channel.
@@ -178,8 +196,17 @@ impl ExtendedChannel {
     }
 
     /// Sets the [`ChainTip`].
+    ///
+    /// A first tip only initializes the channel, and setting the current tip again changes
+    /// nothing. Replacing the tip with a different one is a chain-tip transition, handled as in
+    /// [`on_chain_tip_update`](Self::on_chain_tip_update): the jobs built under the previous tip
+    /// go stale rather than stay validatable against a header the miner was never assigned.
     pub fn set_chain_tip(&mut self, chain_tip: ChainTip) {
-        self.chain_tip = Some(chain_tip);
+        match &self.chain_tip {
+            None => self.chain_tip = Some(chain_tip),
+            Some(current) if *current == chain_tip => {}
+            Some(_) => self.update_chain_tip(chain_tip),
+        }
     }
 
     /// Sets a new extranonce prefix for the channel.
@@ -187,6 +214,13 @@ impl ExtendedChannel {
     /// After this change, all new jobs will use the new extranonce prefix.
     /// Jobs created before this call retain the previous extranonce prefix,
     /// and share validation is performed accordingly.
+    ///
+    /// Because of that, a previous prefix minted by a local
+    /// [`ExtranonceAllocator`](crate::extranonce_manager::ExtranonceAllocator) (e.g. by a proxy
+    /// sub-allocating an upstream-assigned extranonce space) is not released here: its slot
+    /// stays reserved until no future, active or past job created under it remains, so that the
+    /// allocator cannot hand the same extranonce space to another live channel while those jobs
+    /// still validate shares. Wire-sourced prefixes hold no slot and are simply dropped.
     ///
     /// Returns an error if the new extranonce prefix is too large.
     pub fn set_extranonce_prefix(
@@ -197,7 +231,16 @@ impl ExtendedChannel {
             return Err(ExtendedChannelError::NewExtranoncePrefixTooLarge);
         }
 
-        self.extranonce_prefix = new_extranonce_prefix;
+        let retired_extranonce_prefix =
+            core::mem::replace(&mut self.extranonce_prefix, new_extranonce_prefix);
+        self.retired_extranonce_prefixes.retire(
+            retired_extranonce_prefix,
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.extranonce_prefix.as_slice()),
+        );
 
         Ok(())
     }
@@ -223,11 +266,20 @@ impl ExtendedChannel {
     /// empty `min_ntime` (i.e. queued future jobs), so their associated target is refreshed here.
     /// Jobs that were already received with a set `min_ntime` (active, past and stale jobs) keep
     /// their target.
-    pub fn set_target(&mut self, new_target: Target) {
+    ///
+    /// Returns [`ExtendedChannelError::InvalidTarget`] if `new_target` is zero, leaving the
+    /// channel unchanged.
+    pub fn set_target(&mut self, new_target: Target) -> Result<(), ExtendedChannelError> {
+        if new_target == Target::ZERO {
+            return Err(ExtendedChannelError::InvalidTarget);
+        }
+
         self.target = new_target;
         for future_job in self.future_jobs.values_mut() {
-            future_job.2 = new_target;
+            future_job.target = new_target;
         }
+
+        Ok(())
     }
 
     /// Returns the cumulative nominal hashrate for the channel, in h/s.
@@ -328,7 +380,9 @@ impl ExtendedChannel {
     ///   evicts the oldest.
     /// - Otherwise, the job is activated and previous active job moves to the past jobs list.
     ///   At most [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the
-    ///   oldest.
+    ///   oldest. Such a job is mined against the current chain tip, so a `min_ntime` below the
+    ///   tip's is refused with [`ExtendedChannelError::JobMinNtimeBelowChainTip`], leaving the
+    ///   channel unchanged.
     pub fn on_new_extended_mining_job(
         &mut self,
         new_extended_mining_job: NewExtendedMiningJobOwned,
@@ -355,25 +409,40 @@ impl ExtendedChannel {
         };
 
         match new_extended_mining_job.min_ntime.clone().into_inner() {
-            Some(_min_ntime) => {
-                if let Some(active_job) = self.active_job.take() {
-                    self.retire_job_to_past(active_job);
+            Some(min_ntime) => {
+                // the job is mined against the chain tip, whose min_ntime is the smallest nTime
+                // available for it; a job allowing earlier shares would have them carry a
+                // timestamp the tip declared unavailable
+                if self
+                    .chain_tip
+                    .as_ref()
+                    .is_some_and(|chain_tip| min_ntime < chain_tip.min_ntime())
+                {
+                    return Err(ExtendedChannelError::JobMinNtimeBelowChainTip);
                 }
-                self.active_job = Some((
-                    new_extended_mining_job,
-                    self.extranonce_prefix.as_bytes().to_vec(),
-                    self.target,
-                ));
+
+                // an ID names either a live job or a stale one, never both
+                self.stale_jobs.remove(&new_extended_mining_job.job_id);
+                // the new job is installed before the displaced one is retired: retirement may
+                // prune retired extranonce prefixes, and the new job is a live user of its bytes
+                let displaced_job = self.active_job.replace(ExtendedJob {
+                    job_message: new_extended_mining_job,
+                    extranonce_prefix: self.extranonce_prefix.as_bytes().to_vec(),
+                    target: self.target,
+                });
+                if let Some(displaced_job) = displaced_job {
+                    self.retire_job_to_past(displaced_job);
+                }
             }
             None => {
                 let job_id = new_extended_mining_job.job_id;
                 self.future_jobs.insert(
                     job_id,
-                    (
-                        new_extended_mining_job,
-                        self.extranonce_prefix.as_bytes().to_vec(),
-                        self.target,
-                    ),
+                    ExtendedJob {
+                        job_message: new_extended_mining_job,
+                        extranonce_prefix: self.extranonce_prefix.as_bytes().to_vec(),
+                        target: self.target,
+                    },
                 );
 
                 // a replaced job_id moves to the back of the eviction order
@@ -385,6 +454,11 @@ impl ExtendedChannel {
                         self.future_jobs.remove(&evicted_job_id);
                     }
                 }
+
+                // a replaced or evicted job may have been the last one holding a retired
+                // extranonce prefix alive; release such slots now rather than at the next chain
+                // transition, which the upstream can withhold
+                self.prune_retired_extranonce_prefixes();
             }
         }
 
@@ -491,14 +565,18 @@ impl ExtendedChannel {
             merkle_path: set_custom_mining_job.merkle_path,
         };
 
-        if let Some(active_job) = self.active_job.take() {
-            self.retire_job_to_past(active_job);
+        // an ID names either a live job or a stale one, never both
+        self.stale_jobs.remove(&new_extended_mining_job.job_id);
+        // the new job is installed before the displaced one is retired: retirement may prune
+        // retired extranonce prefixes, and the new job is a live user of its bytes
+        let displaced_job = self.active_job.replace(ExtendedJob {
+            job_message: new_extended_mining_job,
+            extranonce_prefix: self.extranonce_prefix.as_bytes().to_vec(),
+            target: self.target,
+        });
+        if let Some(displaced_job) = displaced_job {
+            self.retire_job_to_past(displaced_job);
         }
-        self.active_job = Some((
-            new_extended_mining_job,
-            self.extranonce_prefix.as_bytes().to_vec(),
-            self.target,
-        ));
 
         Ok(())
     }
@@ -508,7 +586,7 @@ impl ExtendedChannel {
     // though it would otherwise have been accepted and propagated: a bounded loss of
     // creditable work, the price of bounding memory under a hostile upstream.
     fn retire_job_to_past(&mut self, job: ExtendedJob) {
-        let job_id = job.0.job_id;
+        let job_id = job.job_message.job_id;
         self.past_jobs.insert(job_id, job);
 
         // a replaced job_id moves to the back of the eviction order
@@ -520,6 +598,24 @@ impl ExtendedChannel {
                 self.past_jobs.remove(&evicted_job_id);
             }
         }
+
+        // a replaced or evicted job may have been the last one holding a retired extranonce
+        // prefix alive; release such slots now rather than at the next chain transition, which
+        // the upstream can withhold
+        self.prune_retired_extranonce_prefixes();
+    }
+
+    // Drops every retired extranonce prefix that no future, active or past job still references,
+    // releasing its allocator slot. Stale jobs are not live: shares against them are rejected,
+    // so they hold no prefix.
+    fn prune_retired_extranonce_prefixes(&mut self) {
+        self.retired_extranonce_prefixes.prune(
+            self.future_jobs
+                .values()
+                .chain(self.active_job.iter())
+                .chain(self.past_jobs.values())
+                .map(|job| job.extranonce_prefix.as_slice()),
+        );
     }
 
     /// Handles a [`ChainTip`] update.
@@ -535,8 +631,22 @@ impl ExtendedChannel {
     /// - Retires the previously active job as stale, leaving the channel with no active job until
     ///   the next job message arrives.
     /// - Marks all past jobs as stale and clears them.
-    /// - Clears all seen shares as shares for the previous chain tip will be rejected as stale.
+    /// - Clears all seen shares if `prev_hash` changed, as shares for the previous chain tip will
+    ///   be rejected as stale; a repeated `prev_hash` keeps them, see
+    ///   [`ShareAccounting::flush_seen_shares`].
     pub fn on_chain_tip_update(&mut self, chain_tip: ChainTip) -> Result<(), ExtendedChannelError> {
+        self.update_chain_tip(chain_tip);
+        Ok(())
+    }
+
+    // Moves the channel onto `chain_tip`: future jobs are dropped, the active and past jobs go
+    // stale, retired extranonce prefixes are pruned and seen shares are flushed if `prev_hash`
+    // changed.
+    fn update_chain_tip(&mut self, chain_tip: ChainTip) {
+        let is_new_prev_hash = self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|previous| previous.prev_hash() != chain_tip.prev_hash());
         self.chain_tip = Some(chain_tip);
 
         // all other future jobs are now useless
@@ -544,7 +654,8 @@ impl ExtendedChannel {
         self.future_job_order.clear();
 
         // mark all past jobs as stale, so that shares are not propagated
-        self.stale_jobs = self.past_jobs.clone();
+        self.stale_jobs = core::mem::take(&mut self.past_jobs);
+        self.past_job_order.clear();
 
         // the previously active job belongs to the old chain tip, so it goes stale with them.
         // without this, a share arriving before the next SetCustomMiningJobSuccess would still
@@ -553,17 +664,18 @@ impl ExtendedChannel {
         // cap: retiring it through the capped past path would push the oldest past job out of
         // the stale set, misclassifying its late shares as InvalidJobId instead of Stale.
         if let Some(active_job) = self.active_job.take() {
-            self.stale_jobs.insert(active_job.0.job_id, active_job);
+            self.stale_jobs
+                .insert(active_job.job_message.job_id, active_job);
         }
 
-        // clear past jobs, as we're no longer going to propagate shares for them
-        self.past_jobs.clear();
-        self.past_job_order.clear();
+        // the jobs that just went stale can no longer accept shares, so any retired extranonce
+        // prefix they were the last reference to is now releasable
+        self.prune_retired_extranonce_prefixes();
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
-
-        Ok(())
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if is_new_prev_hash {
+            self.share_accounting.flush_seen_shares();
+        }
     }
 
     /// Handles a [`SetNewPrevHash`](SetNewPrevHashMp) message from upstream.
@@ -574,7 +686,9 @@ impl ExtendedChannel {
     ///   untouched.
     /// - If it is a future job, activates it as the current job.
     /// - Marks the previously active job and all past jobs as stale, and clears past jobs.
-    /// - Clears all seen shares as shares for the previous chain tip will be rejected as stale.
+    /// - Clears all seen shares if `prev_hash` changed, as shares for the previous chain tip will
+    ///   be rejected as stale; a repeated `prev_hash` keeps them, see
+    ///   [`ShareAccounting::flush_seen_shares`].
     /// - Updates the chain tip for the channel.
     pub fn on_set_new_prev_hash(
         &mut self,
@@ -584,7 +698,8 @@ impl ExtendedChannel {
         // that the JobIdNotFound path below does not corrupt channel state
         let previously_active_job = match self.future_jobs.remove(&set_new_prev_hash.job_id) {
             Some(mut activated_job) => {
-                activated_job.0.min_ntime = Sv2OptionOwned::new(Some(set_new_prev_hash.min_ntime));
+                activated_job.job_message.min_ntime =
+                    Sv2OptionOwned::new(Some(set_new_prev_hash.min_ntime));
                 self.active_job.replace(activated_job)
             }
             None => {
@@ -597,23 +712,36 @@ impl ExtendedChannel {
         self.future_job_order.clear();
 
         // mark all past jobs as stale, so that shares are not propagated
-        self.stale_jobs = self.past_jobs.clone();
+        self.stale_jobs = core::mem::take(&mut self.past_jobs);
+        self.past_job_order.clear();
 
         // the job that was active under the previous chain tip goes stale with them rather
         // than being silently dropped, bypassing the MAX_PAST_JOBS cap: retiring it through
         // the capped past path would push the oldest past job out of the stale set, and a
         // late share for either job would be rejected as InvalidJobId instead of Stale
         if let Some(previously_active_job) = previously_active_job {
-            self.stale_jobs
-                .insert(previously_active_job.0.job_id, previously_active_job);
+            self.stale_jobs.insert(
+                previously_active_job.job_message.job_id,
+                previously_active_job,
+            );
         }
 
-        // clear past jobs, as we're no longer going to propagate shares for them
-        self.past_jobs.clear();
-        self.past_job_order.clear();
+        // the activated job may reuse the ID of a job that just went stale; an ID names either
+        // a live job or a stale one, never both
+        self.stale_jobs.remove(&set_new_prev_hash.job_id);
 
-        // clear seen shares, as shares for past chain tip will be rejected as stale
-        self.share_accounting.flush_seen_shares();
+        // the jobs that just went stale can no longer accept shares, so any retired extranonce
+        // prefix they were the last reference to is now releasable
+        self.prune_retired_extranonce_prefixes();
+
+        // hashes are retained while prev_hash is unchanged, see ShareAccounting::flush_seen_shares
+        if self
+            .chain_tip
+            .as_ref()
+            .is_some_and(|chain_tip| chain_tip.prev_hash() != set_new_prev_hash.prev_hash)
+        {
+            self.share_accounting.flush_seen_shares();
+        }
 
         self.chain_tip = Some(set_new_prev_hash.into());
 
@@ -623,15 +751,18 @@ impl ExtendedChannel {
     /// Validates a share prior to submission upstream.
     ///
     /// Updates channel state with the share validation result:
-    /// - Prevents propagation of stale, duplicate, low-difficulty, or low-ntime shares
-    ///   (shares whose `ntime` is below the chain tip's `min_ntime` or the job's own
-    ///   `min_ntime` — an immediately-active job may carry a `min_ntime` later than the chain
-    ///   tip's minimum, so the effective lower bound is the larger of the two — as well as
-    ///   shares whose `ntime` exceeds the chain tip's `min_ntime + MAX_FUTURE_BLOCK_TIME`, see
-    ///   [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
-    ///   elapsed-time window).
+    /// - Prevents propagation of stale, duplicate, low-difficulty, or out-of-window shares
+    ///   (shares whose `ntime` is outside `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]`,
+    ///   where `min_ntime` is the referenced job's: the `SetNewPrevHash` timestamp for a job
+    ///   activated from the future queue, or the value its own message advertised for an
+    ///   immediately-active job; see [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper
+    ///   bound relates to the spec's elapsed-time window).
     /// - Indicates whether a block was found from the share.
     /// - Maintains local share accounting for later reconciliation with upstream acknowledgements.
+    ///   Duplicate detection is bounded at [`MAX_SEEN_SHARES`](crate::client::MAX_SEEN_SHARES)
+    ///   validated shares per `prev_hash` (oldest evicted first), so an evicted share can be
+    ///   validated again; see [`ShareAccounting`] for why this replay window is accepted on
+    ///   clients.
     pub fn validate_share(
         &mut self,
         share: SubmitSharesExtendedOwned,
@@ -642,7 +773,7 @@ impl ExtendedChannel {
         let is_active_job = self
             .active_job
             .as_ref()
-            .is_some_and(|job| job.0.job_id == job_id);
+            .is_some_and(|job| job.job_message.job_id == job_id);
 
         // check if job_id is past job
         let is_past_job = self.past_jobs.contains_key(&job_id);
@@ -674,7 +805,7 @@ impl ExtendedChannel {
         }
 
         let mut full_extranonce = vec![];
-        full_extranonce.extend_from_slice(job.1.as_slice());
+        full_extranonce.extend_from_slice(job.extranonce_prefix.as_slice());
         full_extranonce.extend_from_slice(share.extranonce.as_bytes());
 
         // calculate the merkle root from:
@@ -683,10 +814,10 @@ impl ExtendedChannel {
         // - job coinbase_tx_suffix
         // - job merkle_path
         let merkle_root: [u8; 32] = merkle_root_from_path(
-            job.0.coinbase_tx_prefix.as_bytes(),
-            job.0.coinbase_tx_suffix.as_bytes(),
+            job.job_message.coinbase_tx_prefix.as_bytes(),
+            job.job_message.coinbase_tx_suffix.as_bytes(),
             full_extranonce.as_ref(),
-            job.0.merkle_path.as_slice(),
+            job.job_message.merkle_path.as_slice(),
         )
         .ok_or(ShareValidationError::Invalid(
             ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
@@ -700,34 +831,36 @@ impl ExtendedChannel {
         let prev_hash = chain_tip.prev_hash();
         let nbits: CompactTarget = CompactTarget::from_consensus(chain_tip.nbits());
 
-        if share.ntime < chain_tip.min_ntime() {
+        // the share's ntime is bounded by the min_ntime of the job it references: a job
+        // activated from the future queue carries the SetNewPrevHash timestamp that activated
+        // it (which is also the chain tip's), an immediately-active job the value its own
+        // message advertised. Every active or past job carries one: a job without it is a
+        // future job, which is never mined on.
+        let job_min_ntime = job
+            .job_message
+            .min_ntime
+            .as_ref()
+            .copied()
+            .expect("active and past jobs carry a min_ntime");
+
+        if share.ntime < job_min_ntime {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
         }
 
-        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
-        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
-        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at the
+        // receipt of the message that supplied min_ntime, since this crate has no clock (see
+        // MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > job_min_ntime.saturating_add(MAX_FUTURE_BLOCK_TIME) {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
-        }
-
-        // an immediately-active job carries its own min_ntime, which may be later than the
-        // chain tip's minimum; jobs activated from the future queue have it overwritten with
-        // the SetNewPrevHash timestamp, making this check redundant there (and harmless)
-        if let Some(job_min_ntime) = job.0.min_ntime.clone().into_inner() {
-            if share.ntime < job_min_ntime {
-                return Err(ShareValidationError::Invalid(
-                    ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
-                ));
-            }
         }
 
         // Only BIP323 general-purpose bits may differ from the job's advertised version.
         // When version rolling is not allowed, the share version must match the job version exactly.
-        let version_rolling_mask = if job.0.version_rolling_allowed {
+        let version_rolling_mask = if job.job_message.version_rolling_allowed {
             VERSION_ROLLING_MASK
         } else {
             0
@@ -738,8 +871,10 @@ impl ExtendedChannel {
         // from the job's advertised version means an unauthorized change. When version
         // rolling is not allowed, the mask is 0 and this degenerates to strict equality
         // with the job version.
-        if (share.version & !version_rolling_mask) != (job.0.version & !version_rolling_mask) {
-            if job.0.version_rolling_allowed {
+        if (share.version & !version_rolling_mask)
+            != (job.job_message.version & !version_rolling_mask)
+        {
+            if job.job_message.version_rolling_allowed {
                 return Err(ShareValidationError::Invalid(
                     ERROR_CODE_SUBMIT_SHARES_INVALID_NON_ROLLABLE_VERSION_BIT,
                 ));
@@ -766,7 +901,7 @@ impl ExtendedChannel {
         let share_hash_as_diff = share_hash_target.difficulty_float();
 
         let network_target = Target::from_compact(nbits);
-        let job_target = job.2;
+        let job_target = job.target;
 
         // print hash_as_target and self.target as human readable hex
         let share_hash_target_bytes = share_hash_target.to_be_bytes();
@@ -829,6 +964,7 @@ impl ExtendedChannel {
 
 #[cfg(test)]
 mod tests {
+    use super::ExtendedJob;
     use crate::{
         chain_tip::ChainTip,
         client::{
@@ -837,7 +973,7 @@ mod tests {
             share_accounting::{ShareValidationError, ShareValidationResult},
             MAX_FUTURE_JOBS, MAX_PAST_JOBS,
         },
-        extranonce_manager::ExtranoncePrefix,
+        extranonce_manager::{ExtranonceAllocator, ExtranonceAllocatorError, ExtranoncePrefix},
     };
     use binary_sv2::Sv2OptionOwned as Sv2Option;
     use bitcoin::Target;
@@ -871,7 +1007,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -927,11 +1064,11 @@ mod tests {
 
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                previously_future_job,
+            Some(&ExtendedJob {
+                job_message: previously_future_job,
                 extranonce_prefix,
-                channel.get_target().clone()
-            ))
+                target: channel.get_target().clone()
+            })
         );
     }
 
@@ -953,7 +1090,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id,
@@ -1014,7 +1152,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id,
@@ -1094,7 +1233,8 @@ mod tests {
             true,
             4u16,
             None,
-        );
+        )
+        .unwrap();
 
         let active_job = NewExtendedMiningJob {
             channel_id,
@@ -1160,7 +1300,8 @@ mod tests {
             true,
             4u16,
             Some(custom_cap),
-        );
+        )
+        .unwrap();
 
         let active_job = NewExtendedMiningJob {
             channel_id,
@@ -1214,7 +1355,8 @@ mod tests {
             true,
             4u16,
             Some(0),
-        );
+        )
+        .unwrap();
         for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
             let mut job = active_job.clone();
             job.job_id = job_id;
@@ -1246,7 +1388,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let ntime: u32 = 1746839905;
         let active_job = NewExtendedMiningJob {
@@ -1280,11 +1423,11 @@ mod tests {
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                active_job.clone(),
-                extranonce_prefix.clone(),
-                channel.get_target().clone()
-            ))
+            Some(&ExtendedJob {
+                job_message: active_job.clone(),
+                extranonce_prefix: extranonce_prefix.clone(),
+                target: channel.get_target().clone()
+            })
         );
         assert_eq!(channel.get_past_jobs_count(), 0);
 
@@ -1297,11 +1440,11 @@ mod tests {
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(
             channel.get_active_job(),
-            Some(&(
-                new_active_job,
+            Some(&ExtendedJob {
+                job_message: new_active_job,
                 extranonce_prefix,
-                channel.get_target().clone()
-            ))
+                target: channel.get_target().clone()
+            })
         );
         assert_eq!(channel.get_past_jobs_count(), 1);
     }
@@ -1328,7 +1471,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1428,7 +1572,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1518,7 +1663,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1614,7 +1760,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1723,7 +1870,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1820,7 +1968,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -1931,7 +2080,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2022,7 +2172,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2122,7 +2273,8 @@ mod tests {
             version_rolling,
             rollable_extranonce_size,
             None,
-        );
+        )
+        .unwrap();
 
         let future_job = NewExtendedMiningJob {
             channel_id: 1,
@@ -2160,7 +2312,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x50, 0x00, 0x00,
         ]);
-        channel.set_target(new_target);
+        channel.set_target(new_target).unwrap();
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
         let nbits: u32 = 453040064;
@@ -2219,7 +2371,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         // a non-future job is activated immediately
         let active_job = NewExtendedMiningJob {
@@ -2285,7 +2438,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job_template = NewExtendedMiningJob {
             channel_id,
@@ -2340,7 +2494,7 @@ mod tests {
             channel.on_set_new_prev_hash(unknown_job_set_new_prev_hash),
             Err(ExtendedChannelError::JobIdNotFound)
         ));
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 1);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
         assert_eq!(channel.get_stale_jobs_count(), 0);
 
         let set_new_prev_hash = SetNewPrevHashMp {
@@ -2353,7 +2507,7 @@ mod tests {
         channel.on_set_new_prev_hash(set_new_prev_hash).unwrap();
 
         // job 1 was active under the previous chain tip, so it is now stale
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, 2);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 2);
         assert_eq!(channel.get_stale_jobs_count(), 1);
         assert!(channel.get_stale_job(1).is_some());
         assert_eq!(channel.get_past_jobs_count(), 0);
@@ -2377,7 +2531,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job_template = NewExtendedMiningJob {
             channel_id,
@@ -2453,7 +2608,10 @@ mod tests {
             assert!(channel.get_stale_job(job_id).is_some());
         }
         assert_eq!(channel.get_past_jobs_count(), 0);
-        assert_eq!(channel.get_active_job().unwrap().0.job_id, future_job_id);
+        assert_eq!(
+            channel.get_active_job().unwrap().job_message.job_id,
+            future_job_id
+        );
     }
 
     #[test]
@@ -2499,7 +2657,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         let job = |job_id: u32, min_ntime: Option<u32>| NewExtendedMiningJob {
             channel_id,
@@ -2564,9 +2723,20 @@ mod tests {
             .on_new_extended_mining_job(job(2, Some(job_min_ntime)))
             .unwrap();
 
-        // a share in the gap passes the chain-tip bound but not the job's own bound
+        // a share in the gap (at or above the tip's min_ntime, below the job's) is rejected
         let res = channel.validate_share(share(1, 2, job_min_ntime - 1));
         assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // the upper bound is anchored at the job's min_ntime as well: one second past it is
+        // rejected, exactly on it is accepted
+        let res = channel.validate_share(share(
+            3,
+            2,
+            job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME + 1,
+        ));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+        let res = channel.validate_share(share(4, 2, job_min_ntime + crate::MAX_FUTURE_BLOCK_TIME));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
 
         let res = channel.validate_share(share(2, 2, job_min_ntime));
         assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
@@ -2592,7 +2762,8 @@ mod tests {
             true,
             8u16,
             None,
-        );
+        )
+        .unwrap();
 
         channel
             .on_new_extended_mining_job(NewExtendedMiningJob {
@@ -2659,5 +2830,594 @@ mod tests {
         // exactly on the bound the share is accepted (channel target is permissive)
         let res = channel.validate_share(share(2, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME));
         assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_reused_job_id_resolves_to_the_live_job() {
+        // Upstream job IDs carry no uniqueness guarantee: a job may be installed under the ID of
+        // a job that went stale, both when a future job is activated and when an immediately-
+        // active job arrives. An ID names either a live job or a stale one, never both, so the
+        // stale namesake is dropped and shares for the ID validate against the live job.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        let job = |min_ntime: Option<u32>| NewExtendedMiningJob {
+            channel_id,
+            job_id: 1,
+            min_ntime: Sv2Option::new(min_ntime),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        // job 1 is active under the current tip, and upstream reuses its ID for the next tip's
+        // future job
+        channel
+            .on_new_extended_mining_job(job(Some(1745596970)))
+            .unwrap();
+        channel.on_new_extended_mining_job(job(None)).unwrap();
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: 1745596980,
+            })
+            .unwrap();
+
+        // ID 1 names the activated job only: its displaced namesake is gone from the stale set
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
+        assert!(channel.get_stale_job(1).is_none());
+        assert_eq!(channel.get_stale_jobs_count(), 0);
+
+        // a share for the live job is validated (channel target is permissive)
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 0,
+            ntime,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.validate_share(share(0, 1745596980)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // job 1 goes stale on the next tip transition, and upstream then reuses its ID for an
+        // immediately-active job
+        let mut future_job = job(None);
+        future_job.job_id = 2;
+        channel.on_new_extended_mining_job(future_job).unwrap();
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 2,
+                prev_hash: [
+                    154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107,
+                    73, 34, 0, 162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: 1745596990,
+            })
+            .unwrap();
+        assert!(channel.get_stale_job(1).is_some());
+        channel
+            .on_new_extended_mining_job(job(Some(1745596990)))
+            .unwrap();
+
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
+        assert!(channel.get_stale_job(1).is_none());
+        assert!(matches!(
+            channel.validate_share(share(1, 1745596990)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+    }
+
+    #[test]
+    fn test_repeated_prev_hash_keeps_seen_shares() {
+        // Job IDs are not committed into the block header, so a non-conforming upstream can send
+        // an identical future job under a new job_id and repeat the same SetNewPrevHash. The
+        // replacement job commits to the same headers as the previous one, so the
+        // validated-share hashes must survive the repeated tip or the same proof is validated
+        // (and forwarded) again under the new job_id.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        let future_job = |job_id: u32| NewExtendedMiningJob {
+            channel_id,
+            job_id,
+            min_ntime: Sv2Option::new(None),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let set_new_prev_hash = |job_id: u32| SetNewPrevHashMp {
+            channel_id,
+            job_id,
+            prev_hash: [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            nbits: 453040064,
+            min_ntime: 1745596970,
+        };
+
+        let share = |sequence_number: u32, job_id: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id,
+            nonce: 0,
+            ntime: 1745596971,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+
+        channel.on_new_extended_mining_job(future_job(1)).unwrap();
+        channel.on_set_new_prev_hash(set_new_prev_hash(1)).unwrap();
+        assert!(matches!(
+            channel.validate_share(share(0, 1)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // the upstream repeats the tip under a new job_id: same header space, new job
+        channel.on_new_extended_mining_job(future_job(2)).unwrap();
+        channel.on_set_new_prev_hash(set_new_prev_hash(2)).unwrap();
+
+        // the identical proof under the new job_id is a duplicate, not a second validation
+        assert!(matches!(
+            channel.validate_share(share(1, 2)),
+            Err(ShareValidationError::DuplicateShare(_))
+        ));
+        assert_eq!(channel.get_share_accounting().get_validated_shares(), 1);
+    }
+
+    // An immediately-active job whose coinbase carries a 32-byte extranonce.
+    fn active_job_template(job_id: u32) -> NewExtendedMiningJob {
+        NewExtendedMiningJob {
+            channel_id: 1,
+            job_id,
+            min_ntime: Sv2Option::new(Some(1745596970)),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        }
+    }
+
+    // Builds an extended channel from a real allocator that only has room for two channels,
+    // creates an active job under the first allocated prefix, then rotates the channel onto the
+    // second one.
+    //
+    // Returns the allocator (now with both slots handed out), the channel and the bytes of the
+    // rotated-out prefix.
+    fn extended_channel_with_rotated_extranonce_prefix(
+    ) -> (ExtranonceAllocator, ExtendedChannel, Vec<u8>) {
+        let mut allocator = ExtranonceAllocator::new(vec![], 32, 2).unwrap();
+        let prefix_1 = allocator.allocate_extended(8).unwrap();
+        let prefix_2 = allocator.allocate_extended(8).unwrap();
+        assert_ne!(prefix_1.as_bytes(), prefix_2.as_bytes());
+        assert_eq!(allocator.allocated_count(), 2);
+
+        let prefix_1_bytes = prefix_1.as_bytes().to_vec();
+        let rollable_extranonce_size = (32 - prefix_1_bytes.len()) as u16;
+
+        let mut channel = ExtendedChannel::new(
+            1,
+            "user_identity".to_string(),
+            prefix_1.into(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            rollable_extranonce_size,
+            None,
+        )
+        .unwrap();
+
+        // an immediately-active job, created under the first prefix
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+        assert_eq!(
+            channel.get_active_job().unwrap().extranonce_prefix,
+            prefix_1_bytes
+        );
+
+        // rotate the channel onto the second prefix, while the job above is still live
+        channel.set_extranonce_prefix(prefix_2.into()).unwrap();
+
+        (allocator, channel, prefix_1_bytes)
+    }
+
+    #[test]
+    fn test_rotated_extranonce_prefix_slot_not_reused_while_job_live() {
+        // Rotating a locally allocated extranonce prefix must not return the old prefix's
+        // allocator slot to the free pool while jobs created under it can still accept shares.
+        // Otherwise the allocator could hand the very same extranonce space to a second live
+        // channel, making the same work replayable across both.
+        let (mut allocator, channel, prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        // the rotated-out slot is still reserved, so the allocator is still full
+        assert_eq!(allocator.allocated_count(), 2);
+        assert!(matches!(
+            allocator.allocate_extended(8),
+            Err(ExtranonceAllocatorError::CapacityExhausted)
+        ));
+
+        // and the pre-rotation job is still live under the old prefix bytes
+        assert_eq!(
+            channel.get_active_job().unwrap().extranonce_prefix,
+            prefix_1_bytes
+        );
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_released_after_jobs_go_stale() {
+        // Counterpart of the test above: the deferred release must actually happen once the
+        // jobs created under the old prefix become stale, otherwise slots would leak.
+        let (mut allocator, mut channel, _prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        let prev_hash = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ];
+        channel
+            .on_chain_tip_update(ChainTip::new(prev_hash.into(), 545259519, 1745596980))
+            .unwrap();
+        assert!(channel.get_stale_job(1).is_some());
+
+        // the pre-rotation job can no longer accept shares, so its prefix was released
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_released_after_job_eviction() {
+        // Eviction counterpart of the test above: when the last job created under a
+        // rotated-out prefix is evicted from past jobs, the prefix's slot must be released
+        // right away — an upstream withholding the next chain transition must not be able to
+        // pin allocator slots.
+        let (mut allocator, mut channel, _prefix_1_bytes) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        // flood enough immediately-active jobs to push the pre-rotation job out of past jobs
+        for job_id in 2..2 + MAX_PAST_JOBS as u32 + 2 {
+            channel
+                .on_new_extended_mining_job(active_job_template(job_id))
+                .unwrap();
+        }
+        assert!(channel.get_past_job(1).is_none());
+
+        // the evicted job was the last reference to the rotated-out prefix, so its slot is free
+        // again
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_survives_install_of_a_job_under_its_bytes() {
+        // Retiring the displaced job may evict a past job and prune retired extranonce
+        // prefixes. The job being installed is a live user of the current prefix bytes, so it
+        // must be in place when that prune runs: a retired prefix from a recreated allocator can
+        // share those bytes, and pruning before the install would release its slot while the
+        // new job goes on to accept shares under them.
+        let mut allocator_1 = ExtranonceAllocator::new(vec![], 32, 1).unwrap();
+        let prefix_1 = allocator_1.allocate_extended(8).unwrap();
+        let mut allocator_2 = ExtranonceAllocator::new(vec![], 32, 1).unwrap();
+        let prefix_2 = allocator_2.allocate_extended(8).unwrap();
+        assert_eq!(prefix_1.as_bytes(), prefix_2.as_bytes());
+        let prefix_len = prefix_1.as_bytes().len();
+        let rollable_extranonce_size = (32 - prefix_len) as u16;
+
+        let mut channel = ExtendedChannel::new(
+            1,
+            "user_identity".to_string(),
+            prefix_1.into(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            rollable_extranonce_size,
+            Some(1),
+        )
+        .unwrap();
+
+        // job 1 under the first prefix, then a rotation onto a wire prefix and job 2 under it
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+        channel
+            .set_extranonce_prefix(ExtranoncePrefix::from_wire(vec![7; prefix_len]).unwrap())
+            .unwrap();
+        channel
+            .on_new_extended_mining_job(active_job_template(2))
+            .unwrap();
+        assert_eq!(allocator_1.allocated_count(), 1);
+
+        // rotate onto the second allocator's byte-identical prefix; installing job 3 under it
+        // retires job 2 and evicts job 1, the last job created under the first prefix
+        channel.set_extranonce_prefix(prefix_2.into()).unwrap();
+        channel
+            .on_new_extended_mining_job(active_job_template(3))
+            .unwrap();
+        assert!(channel.get_past_job(1).is_none());
+
+        // job 3 lives under those bytes, so the first allocator's slot stays reserved
+        assert_eq!(allocator_1.allocated_count(), 1);
+        assert!(matches!(
+            allocator_1.allocate_extended(8),
+            Err(ExtranonceAllocatorError::CapacityExhausted)
+        ));
+    }
+
+    #[test]
+    fn test_zero_target_is_rejected() {
+        // a zero target is refused at construction and on SetTarget, leaving the channel
+        // unchanged (see InvalidTarget)
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let res = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix.clone()).unwrap(),
+            Target::ZERO,
+            1.0,
+            true,
+            8u16,
+            None,
+        );
+        assert!(matches!(res, Err(ExtendedChannelError::InvalidTarget)));
+
+        let target = Target::from_le_bytes([0xff; 32]);
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            target,
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        // a queued future job, whose target a SetTarget would otherwise refresh
+        let mut future_job = active_job_template(1);
+        future_job.min_ntime = Sv2Option::new(None);
+        channel.on_new_extended_mining_job(future_job).unwrap();
+
+        assert!(matches!(
+            channel.set_target(Target::ZERO),
+            Err(ExtendedChannelError::InvalidTarget)
+        ));
+        assert_eq!(channel.get_target(), &target);
+        assert_eq!(channel.get_future_job(1).unwrap().target, target);
+    }
+
+    #[test]
+    fn test_immediately_active_job_below_chain_tip_min_ntime_is_rejected() {
+        // An immediately-active job is mined against the current chain tip, whose min_ntime is
+        // the smallest nTime available for it, so a job with a lower min_ntime must be refused
+        // and leave the channel unchanged. A min_ntime equal to the tip's is the lowest allowed.
+        let channel_id = 1;
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])
+            .unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        let tip_ntime: u32 = 1745596970;
+        let mut future_job = active_job_template(1);
+        future_job.min_ntime = Sv2Option::new(None);
+        channel.on_new_extended_mining_job(future_job).unwrap();
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        let mut below_tip = active_job_template(2);
+        below_tip.min_ntime = Sv2Option::new(Some(tip_ntime - 1));
+        assert!(matches!(
+            channel.on_new_extended_mining_job(below_tip),
+            Err(ExtendedChannelError::JobMinNtimeBelowChainTip)
+        ));
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
+        assert_eq!(channel.get_past_jobs_count(), 0);
+
+        let mut at_tip = active_job_template(3);
+        at_tip.min_ntime = Sv2Option::new(Some(tip_ntime));
+        channel.on_new_extended_mining_job(at_tip).unwrap();
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 3);
+    }
+
+    #[test]
+    fn test_set_chain_tip_replacement_retires_the_jobs_of_the_previous_tip() {
+        // Shares are hashed against the channel's current tip, so a job built under a tip that
+        // set_chain_tip replaces must go stale, as it does on the message-driven transitions:
+        // otherwise a late share for it would be validated against a header the miner was never
+        // assigned. Re-setting the current tip changes nothing.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+            None,
+        )
+        .unwrap();
+
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        let nbits = 453040064;
+        let first_tip = ChainTip::new(
+            [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            nbits,
+            1745596970,
+        );
+        channel.set_chain_tip(first_tip.clone());
+        channel
+            .on_new_extended_mining_job(active_job_template(1))
+            .unwrap();
+
+        let share = |sequence_number: u32, nonce: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce,
+            ntime: 1745596970,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+        assert!(matches!(
+            channel.validate_share(share(0, 0)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // the current tip again is not a transition: the job stays active
+        channel.set_chain_tip(first_tip);
+        assert_eq!(channel.get_active_job().unwrap().job_message.job_id, 1);
+        assert!(matches!(
+            channel.validate_share(share(1, 1)),
+            Ok(ShareValidationResult::Valid(_))
+        ));
+
+        // a different prev_hash retires the job: its late share is stale, not re-hashed
+        channel.set_chain_tip(ChainTip::new(
+            [
+                154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73,
+                34, 0, 162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+            ]
+            .into(),
+            nbits,
+            1745596980,
+        ));
+        assert!(channel.get_active_job().is_none());
+        assert!(channel.get_stale_job(1).is_some());
+        assert!(matches!(
+            channel.validate_share(share(2, 0)),
+            Err(ShareValidationError::Stale(_))
+        ));
     }
 }

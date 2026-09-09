@@ -77,7 +77,9 @@ impl GroupChannel {
     /// Not meant for usage on a Sv2 Job Declaration Client.
     ///
     /// Initializes the group channel state with the provided group channel ID.
-    /// The job factory is initialized with version rolling enabled.
+    /// `version_rolling_allowed` is the version-rolling policy the group's jobs advertise; it must
+    /// be the policy of the extended channels the jobs are imported into, which refuse a looser
+    /// one (see [`ExtendedChannel::on_group_channel_job`](super::extended::ExtendedChannel::on_group_channel_job)).
     ///
     /// For non-JD jobs, `pool_tag_string` is added to the coinbase scriptSig as
     /// `Sv2/pool_tag_string//`.
@@ -88,11 +90,13 @@ impl GroupChannel {
     pub fn new_for_pool(
         group_channel_id: u32,
         full_extranonce_size: usize,
+        version_rolling_allowed: bool,
         pool_tag_string: String,
     ) -> Result<Self, GroupChannelError> {
         let group_channel = Self::new(
             group_channel_id,
             full_extranonce_size,
+            version_rolling_allowed,
             Some(pool_tag_string),
             None,
         )?;
@@ -107,6 +111,10 @@ impl GroupChannel {
     /// Returns an error if target/difficulty parameters are invalid or extranonce prefix
     /// requirements are not met.
     ///
+    /// `version_rolling_allowed` is the version-rolling policy the group's jobs advertise; it must
+    /// be the policy of the extended channels the jobs are imported into, which refuse a looser
+    /// one (see [`ExtendedChannel::on_group_channel_job`](super::extended::ExtendedChannel::on_group_channel_job)).
+    ///
     /// The `pool_tag_string` and `miner_tag_string` are added to the coinbase scriptSig as
     /// `Sv2/pool_tag_string/miner_tag_string/`.
     ///
@@ -116,12 +124,14 @@ impl GroupChannel {
     pub fn new_for_job_declaration_client(
         group_channel_id: u32,
         full_extranonce_size: usize,
+        version_rolling_allowed: bool,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
     ) -> Result<Self, GroupChannelError> {
         let group_channel = Self::new(
             group_channel_id,
             full_extranonce_size,
+            version_rolling_allowed,
             pool_tag_string,
             Some(miner_tag_string),
         )?;
@@ -132,10 +142,11 @@ impl GroupChannel {
     fn new(
         group_channel_id: u32,
         full_extranonce_size: usize,
+        version_rolling_allowed: bool,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
     ) -> Result<Self, GroupChannelError> {
-        let job_factory = JobFactory::new(true, pool_tag, miner_tag);
+        let job_factory = JobFactory::new(version_rolling_allowed, pool_tag, miner_tag);
 
         // conservative check against the spec's worst-case `NewTemplate::coinbase_prefix`.
         // the exact size is re-checked against each actual template in `JobFactory::coinbase`
@@ -410,7 +421,7 @@ mod tests {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel =
-            GroupChannel::new(group_channel_id, full_extranonce_size, None, None).unwrap();
+            GroupChannel::new(group_channel_id, full_extranonce_size, true, None, None).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -533,7 +544,7 @@ mod tests {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel =
-            GroupChannel::new(group_channel_id, full_extranonce_size, None, None).unwrap();
+            GroupChannel::new(group_channel_id, full_extranonce_size, true, None, None).unwrap();
 
         let ntime = 1746839905;
         let prev_hash = [
@@ -624,7 +635,7 @@ mod tests {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel =
-            GroupChannel::new(group_channel_id, full_extranonce_size, None, None).unwrap();
+            GroupChannel::new(group_channel_id, full_extranonce_size, true, None, None).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -673,7 +684,7 @@ mod tests {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel =
-            GroupChannel::new(group_channel_id, full_extranonce_size, None, None).unwrap();
+            GroupChannel::new(group_channel_id, full_extranonce_size, true, None, None).unwrap();
 
         // add a first channel with the correct full extranonce size
         group_channel
@@ -740,7 +751,7 @@ mod tests {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel =
-            GroupChannel::new(group_channel_id, full_extranonce_size, None, None).unwrap();
+            GroupChannel::new(group_channel_id, full_extranonce_size, true, None, None).unwrap();
 
         let template = NewTemplate {
             template_id: 1,
@@ -814,7 +825,7 @@ mod tests {
         // beforehand. The channel must still recover from it — record the new chain tip rather
         // than reject the message and wedge the group-job pipeline in a persistent error path,
         // since the tip carried by the message is self-contained and usable.
-        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+        let mut group_channel = GroupChannel::new(1, 32, true, None, None).unwrap();
         assert!(!group_channel.job_store.has_future_jobs());
         assert!(group_channel.get_chain_tip().is_none());
 
@@ -859,6 +870,7 @@ mod tests {
         let group_channel = GroupChannel::new(
             1,
             full_extranonce_size,
+            true,
             Some("x".repeat(POOL_TAG_AT_SCRIPT_SIG_BUDGET)),
             None,
         )
@@ -874,6 +886,7 @@ mod tests {
         let group_channel = GroupChannel::new(
             1,
             full_extranonce_size,
+            true,
             Some("x".repeat(POOL_TAG_AT_SCRIPT_SIG_BUDGET + 1)),
             None,
         );
@@ -890,6 +903,7 @@ mod tests {
         let mut group_channel = GroupChannel::new(
             group_channel_id,
             full_extranonce_size,
+            true,
             Some("x".repeat(POOL_TAG_AT_SCRIPT_SIG_BUDGET)),
             None,
         )
@@ -923,6 +937,7 @@ mod tests {
         let mut group_channel = GroupChannel::new(
             group_channel_id,
             full_extranonce_size,
+            true,
             Some("x".repeat(POOL_TAG_AT_SCRIPT_SIG_BUDGET)),
             None,
         )
@@ -985,7 +1000,7 @@ mod tests {
 
     #[test]
     fn test_future_template_storage_is_bounded() {
-        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+        let mut group_channel = GroupChannel::new(1, 32, true, None, None).unwrap();
 
         let flood_size = 10_000u64;
         for template_id in 0..flood_size {
@@ -1021,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_replaced_active_job_is_dropped() {
-        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+        let mut group_channel = GroupChannel::new(1, 32, true, None, None).unwrap();
         group_channel.set_chain_tip(ChainTip::new([0; 32].into(), 0x1d00ffff, 1));
 
         let flood_size = 10_000u64;
@@ -1094,5 +1109,57 @@ mod tests {
             assert!(group_channel.job_store.get_stale_job(job_id).is_none());
         }
         assert!(group_channel.get_active_job().is_some());
+    }
+
+    #[test]
+    fn test_group_jobs_advertise_the_configured_version_rolling_policy() {
+        // a group job's flag is what every extended channel importing it tells its miner and
+        // enforces on shares, so it is the policy the application configured, not a constant
+        let mut group_channel = GroupChannel::new(1, 32, false, None, None).unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: true,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        group_channel
+            .on_new_template(template.clone(), coinbase_reward_outputs)
+            .unwrap();
+        let job_id = group_channel
+            .get_future_job_id_from_template_id(template.template_id)
+            .unwrap();
+        assert!(
+            !group_channel
+                .get_future_job(job_id)
+                .unwrap()
+                .get_job_message()
+                .version_rolling_allowed
+        );
     }
 }

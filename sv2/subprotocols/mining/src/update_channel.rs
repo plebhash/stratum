@@ -63,6 +63,7 @@ pub struct UpdateChannelError<'decoder> {
     ///
     /// Possible error codes:
     /// - invalid-nominal-hashrate
+    /// - max-target-out-of-range
     /// - invalid-channel-id
     pub error_code: Str0255<'decoder>,
 }

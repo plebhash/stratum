@@ -130,7 +130,7 @@ impl ExtendedJob {
             job_id: self.get_job_id(),
             merkle_root,
             version: self.get_version(),
-            min_ntime: self.get_min_ntime(),
+            min_ntime: self.job_message.min_ntime.clone(),
         };
 
         let standard_job = StandardJob::from_template(
@@ -188,8 +188,8 @@ impl ExtendedJob {
         &self.job_message.merkle_path
     }
     /// Returns the minimum ntime for this job (if set).
-    pub fn get_min_ntime(&self) -> Sv2OptionOwned<u32> {
-        self.job_message.min_ntime.clone()
+    pub fn get_min_ntime(&self) -> Option<u32> {
+        self.job_message.min_ntime.as_ref().copied()
     }
     /// Returns the block version for this job.
     pub fn get_version(&self) -> u32 {

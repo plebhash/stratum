@@ -26,23 +26,24 @@ pub const VERSION_ROLLING_MASK: u32 = 0x1fffffe0;
 /// Mirrors Bitcoin Core's `MAX_FUTURE_BLOCK_TIME` (`src/chain.h`): a block timestamp more than
 /// 2 hours in the future is consensus-invalid.
 ///
-/// Share validation enforces `share.ntime <= chain_tip.min_ntime() + MAX_FUTURE_BLOCK_TIME`,
-/// anchoring the consensus allowance at chain-tip receipt (`min_ntime` ≈ wall time when the tip
-/// arrived, since this crate is `no_std`-compatible and has no clock). This is deliberately
-/// looser than the Sv2 spec's elapsed-time window (`ntime <= SetNewPrevHash timestamp + seconds
-/// elapsed since receipt`, which is stricter than consensus): embedding applications that have a
-/// time source can additionally enforce the spec-exact window. The bound equals the consensus
-/// limit at tip receipt and becomes conservative as the tip ages; a false rejection would require
-/// a >2h-old chain tip *and* a miner stamping wall time instead of rolling from the job's
-/// `min_ntime` — a known, negligible edge.
+/// Share validation enforces `share.ntime <= min_ntime + MAX_FUTURE_BLOCK_TIME`, where
+/// `min_ntime` is the referenced job's (the chain tip's for jobs built or activated under it),
+/// anchoring the consensus allowance at the receipt of the message that supplied it
+/// (`min_ntime` ≈ wall time when that message arrived, since this crate is `no_std`-compatible
+/// and has no clock). This is deliberately looser than the Sv2 spec's elapsed-time window
+/// (`ntime <= min_ntime + seconds elapsed since receipt of the message that supplied it`, which
+/// is stricter than consensus): embedding applications that have a time source can additionally
+/// enforce the spec-exact window. The bound equals the consensus limit at receipt and becomes
+/// conservative as the job ages; a false rejection would require a >2h-old job *and* a miner
+/// stamping wall time instead of rolling from the job's `min_ntime` — a known, negligible edge.
 pub const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
 
 /// Worst-case chain-tip lifetime, in minutes, assumed when bounding the accepted-share dedup
 /// cache (`seen_shares`).
 ///
-/// `seen_shares` only needs to hold shares for the lifetime of one chain tip (it is flushed on
-/// every tip transition), and 10 hours is far beyond any realistic block interval, so the
-/// resulting cap is unreachable by a well-behaved channel.
+/// `seen_shares` only needs to hold shares for the lifetime of one chain tip (it is flushed
+/// whenever the tip's `prev_hash` changes), and 10 hours is far beyond any realistic block
+/// interval, so the resulting cap is unreachable by a well-behaved channel.
 pub const WORST_CASE_TIP_MINUTES: u64 = 600;
 
 /// Safety margin applied on top of the expected share rate when bounding the accepted-share
