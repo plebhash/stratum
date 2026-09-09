@@ -78,6 +78,13 @@ pub fn hash_rate_to_target(
     hashrate: f64,
     share_per_min: f64,
 ) -> Result<Target, HashRateToTargetError> {
+    // Must be first: NaN compares false against every check below, so it would reach
+    // `h_times_s as u128`, saturate to 0, and return Ok with a zero-work target.
+    // Reachable from the miner-supplied `nominal_hash_rate`.
+    if !hashrate.is_finite() || !share_per_min.is_finite() {
+        return Err(HashRateToTargetError::NonFiniteInput);
+    }
+
     // checks that we are not dividing by zero
     if share_per_min == 0.0 {
         return Err(HashRateToTargetError::DivisionByZero);
@@ -130,9 +137,12 @@ pub fn from_u128_to_u256(input: u128) -> U256Primitive {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HashRateToTargetError {
     DivisionByZero,
     NegativeInput,
+    /// NaN or infinite operand. Distinct from `NegativeInput` because `-inf` is both.
+    NonFiniteInput,
 }
 
 #[derive(Debug)]
@@ -214,7 +224,9 @@ pub fn hash_rate_from_target(target: U256Owned, share_per_min: f64) -> Result<f6
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_rate_from_target, hash_rate_to_target, InputError, U256Owned};
+    use super::{
+        hash_rate_from_target, hash_rate_to_target, HashRateToTargetError, InputError, U256Owned,
+    };
 
     #[test]
     fn zero_target_is_rejected_not_panic() {
@@ -229,5 +241,25 @@ mod tests {
     fn huge_hashrate_does_not_overflow() {
         // f64 -> u128 `as` casts saturate, so this drives h_times_s to u128::MAX.
         assert!(hash_rate_to_target(f64::MAX, 1.0).is_ok());
+    }
+
+    #[test]
+    fn non_finite_hashrate_is_rejected() {
+        for h in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                hash_rate_to_target(h, 1.0),
+                Err(HashRateToTargetError::NonFiniteInput)
+            ));
+        }
+    }
+
+    #[test]
+    fn non_finite_share_per_min_is_rejected() {
+        for spm in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                hash_rate_to_target(1_000.0, spm),
+                Err(HashRateToTargetError::NonFiniteInput)
+            ));
+        }
     }
 }
