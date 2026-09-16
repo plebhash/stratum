@@ -397,7 +397,16 @@ impl Initiator {
             .0
             .serialize();
         let rs_pk_xonly = XOnlyPublicKey::from_slice(&rs_pub_key).unwrap();
-        if signature_message.verify_with_now(&rs_pk_xonly, &self.responder_authority_pk, now) {
+        let certificate_accepted = match &self.responder_authority_pk {
+            Some(authority_pk) => {
+                signature_message.verify_with_now(&rs_pk_xonly, authority_pk, now)
+            }
+            // The initiator was built with `without_responder_authentication`: the certificate's
+            // signature and validity window are not checked, only that it is in a format this
+            // crate can read.
+            None => signature_message.version == crate::CERTIFICATE_VERSION,
+        };
+        if certificate_accepted {
             let (mut temp_k1, mut temp_k2) = Self::hkdf_2(self.get_ck(), &[]);
             let c1 = ChaCha20Poly1305::new(Key::from_slice(&temp_k1[..]));
             let c2 = ChaCha20Poly1305::new(Key::from_slice(&temp_k2[..]));
