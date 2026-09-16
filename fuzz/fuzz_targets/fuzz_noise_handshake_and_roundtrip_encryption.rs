@@ -83,24 +83,21 @@ fuzz_target!(|input: FuzzInput| {
     let responder_kp = generate_key(input.rand_seed);
     let responder_pk: XOnlyPublicKey = responder_kp.public_key().x_only_public_key().0;
 
-    // Determine if the initiator knows the responder's key
+    // Create initiator (client) according to what it knows about the responder's key
     // This affects the Noise handshake pattern (anonymous vs authenticated)
-    let known_peer = match input.peer_mode {
+    let mut initiator = match input.peer_mode {
         // Initiator has no prior knowledge of responder -> performs anonymous handshake
-        PeerMode::Unknown => None,
+        PeerMode::Unknown => Initiator::without_responder_authentication(),
         // Initiator knows responder's exact public key -> authenticated handshake
-        PeerMode::Known => Some(responder_pk),
+        PeerMode::Known => Initiator::new(responder_pk),
         // Initiator knows a DIFFERENT peer's key -> handshake should fail
-        PeerMode::PeerDifferentFromResponder => Some(
+        PeerMode::PeerDifferentFromResponder => Initiator::new(
             generate_key(input.rand_seed ^ 0xcafe_babe)
                 .public_key()
                 .x_only_public_key()
                 .0,
         ),
     };
-
-    // Create initiator (client) - optionally knows the responder
-    let mut initiator = Initiator::new(known_peer);
 
     // Create responder (server) with the generated keypair and certificate validity
     let mut responder = Responder::new(responder_kp, input.cert_validity);

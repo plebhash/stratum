@@ -6,7 +6,7 @@ use crate::{handshake::HandshakeOp, initiator::Initiator, responder::Responder};
 fn test_1() {
     let key_pair = Responder::generate_key();
 
-    let mut initiator = Initiator::new(Some(key_pair.public_key().into()));
+    let mut initiator = Initiator::new(key_pair.public_key().into());
     let mut responder = Responder::new(key_pair, 31449600);
     let first_message = initiator.step_0().unwrap();
     let (second_message, mut responder_engine) = responder.step_1(first_message).unwrap();
@@ -25,7 +25,7 @@ fn test_1_with_rng() {
     let key_pair = Responder::generate_key_with_rng(&mut rand::thread_rng());
 
     let mut initiator: Box<Initiator> =
-        Initiator::new_with_rng(Some(key_pair.public_key().into()), &mut rand::thread_rng());
+        Initiator::new_with_rng(key_pair.public_key().into(), &mut rand::thread_rng());
     let mut responder = Responder::new_with_rng(key_pair, 31449600, &mut rand::thread_rng());
     let first_message = initiator.step_0().unwrap();
     let now = std::time::SystemTime::now()

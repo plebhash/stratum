@@ -35,10 +35,10 @@
 //!
 //! The responder is only authenticated when the [`Initiator`] is given the responder's authority
 //! public key, which it uses to verify the certificate received during the handshake. An
-//! [`Initiator`] built without one, through `Initiator::without_pk` or `Initiator::new` with
-//! `None`, accepts any responder and yields an encrypted but unauthenticated session that the
-//! crate does not distinguish from an authenticated one. Always pin the authority key for
-//! connections that cross a network boundary.
+//! [`Initiator`] built without one, through `Initiator::without_responder_authentication`,
+//! accepts any responder and yields an encrypted but unauthenticated session that the crate does
+//! not distinguish from an authenticated one. Always pin the authority key for connections that
+//! cross a network boundary.
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 

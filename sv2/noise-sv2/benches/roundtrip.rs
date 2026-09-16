@@ -6,7 +6,7 @@ mod common;
 
 fn bench_encryption_roundtrip(c: &mut Criterion) {
     let responder_key = generate_key_with_rng(&mut rng());
-    let mut initiator = Initiator::new(None);
+    let mut initiator = Initiator::without_responder_authentication();
     let mut responder = Responder::new(responder_key, 10);
 
     let msg_0 = initiator.step_0().unwrap();
