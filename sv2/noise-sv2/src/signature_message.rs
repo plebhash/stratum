@@ -18,8 +18,8 @@
 // the authority key, the responder itself or a separate issuer, uses the `sign` method to produce
 // a Schnorr signature over the version, the validity period and the responder's static public
 // key. The [`crate::Initiator`] uses the `verify` method to check the validity of the signed
-// message from the responder, comparing it against the provided public key and optional authority
-// key, while ensuring the message falls within the specified validity period.
+// message from the responder, comparing it against the provided public key and authority key,
+// while ensuring the message falls within the specified validity period.
 
 use core::convert::TryInto;
 use core::fmt;
@@ -93,10 +93,10 @@ impl From<[u8; 74]> for SignatureNoiseMessage {
 }
 
 impl SignatureNoiseMessage {
-    /// Verifies the [`SignatureNoiseMessage`] against the provided public key and an optional
-    /// authority public key at the current system time. See [`Self::verify_with_now`].
+    /// Verifies the [`SignatureNoiseMessage`] against the provided public key and authority
+    /// public key at the current system time. See [`Self::verify_with_now`].
     #[cfg(feature = "std")]
-    pub fn verify(self, pk: &XOnlyPublicKey, authority_pk: &Option<XOnlyPublicKey>) -> bool {
+    pub fn verify(self, pk: &XOnlyPublicKey, authority_pk: &XOnlyPublicKey) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -107,14 +107,9 @@ impl SignatureNoiseMessage {
     /// Verifies the validity and authenticity of the `SignatureNoiseMessage` at a given timestamp
     /// with [`crate::CERTIFICATE_TIME_LEEWAY`] seconds of tolerance.
     ///
-    /// With an authority public key, the message must carry the supported certificate version,
-    /// `now` must fall inside its validity window, and its signature over the responder's static
-    /// key `pk` must verify against the authority key.
-    ///
-    /// # Security
-    ///
-    /// Without an authority public key, only the certificate version is checked and the message is
-    /// otherwise accepted unverified, so `true` does not mean the responder was authenticated.
+    /// The message must carry the supported certificate version, `now` must fall inside its
+    /// validity window, and its signature over the responder's static key `pk` must verify
+    /// against `authority_pk`.
     ///
     /// The current system time should be provided to avoid relying on `std` and allow `no_std`
     /// environments to use another source of time.
@@ -122,7 +117,7 @@ impl SignatureNoiseMessage {
     pub fn verify_with_now(
         self,
         pk: &XOnlyPublicKey,
-        authority_pk: &Option<XOnlyPublicKey>,
+        authority_pk: &XOnlyPublicKey,
         now: u32,
     ) -> bool {
         use crate::CERTIFICATE_TIME_LEEWAY as TIME_LEEWAY;
@@ -131,28 +126,24 @@ impl SignatureNoiseMessage {
             return false;
         }
 
-        if let Some(authority_pk) = authority_pk {
-            // Use saturating ops to cap edges (valid_from ≥ 0, not_valid_after ≤ u32::MAX),
-            // preventing wrap-around and subtle validation bugs with untrusted timestamps.
-            if self.valid_from.saturating_sub(TIME_LEEWAY) <= now
-                && self.not_valid_after.saturating_add(TIME_LEEWAY) >= now
-            {
-                let secp = Secp256k1::verification_only();
-                let (m, s) = self.split();
-                // m = SHA-256(version || valid_from || not_valid_after || server_static_key)
-                let m = [&m[0..10], &pk.serialize()].concat();
-                let m = Message::from_hashed_data::<sha256::Hash>(&m);
-                let s = match Signature::from_slice(&s) {
-                    Ok(s) => s,
-                    _ => return false,
-                };
-                secp.verify_schnorr(&s, &m, authority_pk).is_ok()
-            } else {
-                false
-            }
-        } else {
-            true
+        // Use saturating ops to cap edges (valid_from ≥ 0, not_valid_after ≤ u32::MAX),
+        // preventing wrap-around and subtle validation bugs with untrusted timestamps.
+        if self.valid_from.saturating_sub(TIME_LEEWAY) > now
+            || self.not_valid_after.saturating_add(TIME_LEEWAY) < now
+        {
+            return false;
         }
+
+        let secp = Secp256k1::verification_only();
+        let (m, s) = self.split();
+        // m = SHA-256(version || valid_from || not_valid_after || server_static_key)
+        let m = [&m[0..10], &pk.serialize()].concat();
+        let m = Message::from_hashed_data::<sha256::Hash>(&m);
+        let s = match Signature::from_slice(&s) {
+            Ok(s) => s,
+            _ => return false,
+        };
+        secp.verify_schnorr(&s, &m, authority_pk).is_ok()
     }
 
     /// Signs a [`SignatureNoiseMessage`] using the provided keypair (`kp`).
@@ -251,10 +242,9 @@ mod test {
         );
 
         let certificate = SignatureNoiseMessage::from(encoded);
-        let authority_pk = Some(authority.x_only_public_key().0);
         assert!(!certificate.verify_with_now(
             &responder_static.x_only_public_key().0,
-            &authority_pk,
+            &authority.x_only_public_key().0,
             150,
         ));
     }
